@@ -87,7 +87,16 @@ def initialize_database(log=None):
 
         # Step 1: Create tables
         log('\n1. Creating database tables...')
-        db.create_all(bind_key='main')
+        # PCS calendar storage is intentionally installed from its reviewed
+        # manual SQL script, not created implicitly during application startup.
+        main_tables = [
+            table for table in db.metadatas['main'].tables.values()
+            if table.name != 'pcs_race_calendar'
+        ]
+        db.metadatas['main'].create_all(
+            bind=db.engines['main'],
+            tables=main_tables,
+        )
 
         # Create association tables using raw SQL (to avoid FK resolution issues)
         from webapp.models.main.user import create_association_tables

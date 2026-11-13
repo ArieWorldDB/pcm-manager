@@ -16,8 +16,12 @@ from urllib.parse import urljoin, urlsplit
 
 PCS_ORIGIN = "https://www.procyclingstats.com"
 RESULTS_TABLE_CLASS = "rdrResults"
-_DATE = re.compile(r"^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?$")
-_DATE_RANGE = re.compile(r"^\s*\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\s*[–—-]\s*\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\s*$")
+_DATE = re.compile(r"^(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?$")
+_DATE_PART = r"\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?"
+_DATE_RANGE = re.compile(
+    rf"^\s*({_DATE_PART})\s*(?:/\s*|[–—]\s*|\s+-\s*|(?<=\d)-(?=\d{{1,2}}\.))"
+    rf"\s*({_DATE_PART})\s*$"
+)
 _POSITION = re.compile(r"^\d{1,4}$")
 _PARTICIPATION_STATUSES = {"DNF", "OOT", "OTL", "DSQ"}
 _NON_PARTICIPATION_STATUSES = {"AB", "HD"}
@@ -154,6 +158,21 @@ def _date_from_cell(raw: str, year: int | None) -> date | None:
         return date(parsed_year, int(month), int(day))
     except ValueError:
         return None
+
+
+def _date_range_end(raw: str, year: int | None) -> date | None:
+    """Use the final day for a date range, as PCS does for race GC results."""
+    match = _DATE_RANGE.fullmatch(raw.strip())
+    if not match:
+        return None
+    start_date = _date_from_cell(match.group(1), year)
+    end_date = _date_from_cell(match.group(2), start_date.year if start_date else year)
+    if end_date and start_date and end_date < start_date and not re.search(r"[./-]\d{2,4}$", match.group(2)):
+        try:
+            end_date = end_date.replace(year=end_date.year + 1)
+        except ValueError:
+            return None
+    return end_date
 
 
 def _race_parts(text: str, href: str) -> tuple[str, str]:
@@ -329,19 +348,21 @@ def parse_pcs_html(html: str | bytes, *, rider_id: int, profile_url: str,
             stage_number = int(stage_match.group(1)) if stage_match else None
         is_stage = stage_number is not None or "stage" in row_classes
 
-        if range_heading or (not result_text and not is_classification):
+        if is_classification and result_text:
+            row_type = "classification"
+        elif range_heading or (not result_text and not is_classification):
             context_name = own_name or context_name
             context_category = own_category or context_category
             context_group = group
             row_type = "race_heading"
-        elif is_classification:
-            row_type = "classification"
         elif is_stage:
             row_type = "stage_result"
         else:
             row_type = "one_day_result"
 
         date_value = _date_from_cell(date_text, year)
+        if date_value is None and row_type == "classification":
+            date_value = _date_range_end(date_text, year)
         if date_value:
             race_name = own_name if row_type == "one_day_result" else (context_name or own_name)
             category = own_category or context_category
@@ -457,11 +478,28 @@ def to_activity_monitor_evidence(parsed: dict, *, rider_id: int,
             "season": int(season),
             "date": result_date,
             "race_url": row.get("race_url") or "",
-            "row_type": row.get("row_type") or "",
-            "stage_number": row.get("stage_number"),
-            "stage_name": row.get("stage_name") or "",
             "result": row.get("result") or "",
         }
+        is_general_classification = (
+            str(row.get("row_type") or "").casefold() in {
+                "classification", "overall", "gc", "general_classification",
+            }
+            and row.get("stage_number") is None
+        )
+        if is_general_classification:
+            # PCS may expose one GC via a canonical -gc URL and another via a
+            # race context URL. They are the same database evidence for this rider.
+            race_path = urlsplit(row.get("race_url") or "").path.rstrip("/")
+            race_path = re.sub(r"-gc$", "", race_path, flags=re.IGNORECASE)
+            key_fields["race_path"] = race_path.casefold()
+            key_fields.pop("race_url", None)
+            key_fields["row_type"] = "general_classification"
+        else:
+            key_fields.update({
+                "row_type": row.get("row_type") or "",
+                "stage_number": row.get("stage_number"),
+                "stage_name": row.get("stage_name") or "",
+            })
         if first_cycling_id is None:
             key_fields["source_identity"] = result_identity
             key_fields["identity_generation"] = identity_generation

@@ -89,6 +89,75 @@ def persist_source_outcome(engine, *, check: dict, evidence_rows=()) -> dict:
             )
             inserted_rows = max(result.rowcount or 0, 0)
 
+            # Normalize historical PCS GC duplicates in storage as the race
+            # is encountered again. Keep the strongest verified row, merge its
+            # latest check provenance, then remove only the duplicate GC rows.
+            pcs_gc_rows = [
+                row for row in rows
+                if row.get("source") == "pcs"
+                and str(row.get("row_type") or "").casefold() in {
+                    "classification", "overall", "gc", "general_classification",
+                }
+                and row.get("stage_number") is None
+            ]
+            for row in pcs_gc_rows:
+                from urllib.parse import urlsplit
+
+                url_path = urlsplit(str(row.get("race_url") or "")).path.rstrip("/")
+                if url_path.casefold().endswith("-gc"):
+                    url_path = url_path[:-3]
+                race_name = str(row.get("race_name") or "").strip()
+                race_name = race_name[:-5].strip() if race_name.casefold().endswith(" - gc") else race_name
+                duplicate_ids = connection.execute(text("""
+                    SELECT id
+                    FROM activity_monitor_results
+                    WHERE rider_id IS NOT DISTINCT FROM :rider_id
+                      AND identity_generation = :generation
+                      AND source IN ('pcs', 'pcs_html', 'procyclingstats')
+                      AND stage_number IS NULL
+                      AND LOWER(row_type) IN ('classification', 'overall', 'gc', 'general_classification')
+                      AND result_date IS NOT DISTINCT FROM :result_date
+                      AND COALESCE(NULLIF(gc_position, ''), NULLIF(result_position, ''))
+                          = COALESCE(NULLIF(:gc_position, ''), NULLIF(:result_position, ''))
+                      AND LOWER(REGEXP_REPLACE(REGEXP_REPLACE(
+                            SUBSTRING(race_url FROM '(/race/.*)$'), '-gc/?$', '', 'i'
+                          ), '/+$', ''))
+                          = LOWER(REGEXP_REPLACE(:race_path, '/+$', ''))
+                    ORDER BY identity_verified DESC,
+                             (participation_status = 'classification_only') DESC,
+                             id ASC
+                """), {
+                    "rider_id": row.get("rider_id"),
+                    "generation": row.get("identity_generation"),
+                    "result_date": row.get("result_date"),
+                    "gc_position": row.get("gc_position") or "",
+                    "result_position": row.get("result_position") or "",
+                    "race_path": url_path,
+                }).scalars().all()
+                if len(duplicate_ids) < 2:
+                    continue
+                keep_id = duplicate_ids[0]
+                connection.execute(text("""
+                    UPDATE activity_monitor_results
+                    SET participation_status = 'classification_only',
+                        row_type = 'classification',
+                        race_name = :race_name,
+                        race_url = :race_url,
+                        source_check_id = :check_id,
+                        source_payload = :source_payload
+                    WHERE id = :keep_id
+                """), {
+                    "race_name": race_name,
+                    "race_url": row.get("race_url") or "",
+                    "check_id": check_id,
+                    "source_payload": row.get("source_payload"),
+                    "keep_id": keep_id,
+                })
+                connection.execute(text("""
+                    DELETE FROM activity_monitor_results
+                    WHERE id = ANY(:duplicate_ids)
+                """), {"duplicate_ids": duplicate_ids[1:]})
+
     return {
         "source_check_id": check_id,
         "evidence_rows_received": received_count,

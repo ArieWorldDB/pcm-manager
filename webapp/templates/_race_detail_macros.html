@@ -1,0 +1,94 @@
+{% macro race_title(name, source_label) -%}
+<span class="race-title-text">{{ name }}</span>
+<span class="badge text-bg-light border text-secondary">{{ source_label }}</span>
+{%- endmacro %}
+
+{% macro race_details(items) -%}
+<div class="panel-card card mb-3">
+    <div class="card-body">
+        <h5 class="mb-3">Race details</h5>
+        <div class="row row-cols-2 row-cols-lg-5 g-3">
+            {% for item in items %}
+            <div class="col">
+                <strong>{{ item[0] }}</strong>
+                <div{% if item|length > 2 %} id="{{ item[2] }}"{% endif %}>{% if item[0] in ('Start date', 'End date') and item[1] %}{{ item[1].strftime('%Y-%m-%d') if item[1].strftime is defined else (item[1]|string)[:10] }}{% else %}{{ item[1] if item[1] is not none and item[1] != '' else '-' }}{% endif %}</div>
+            </div>
+            {% endfor %}
+        </div>
+    </div>
+</div>
+{%- endmacro %}
+
+{% macro race_page_header(name, source_label, identifier_label, identifier, status_items=[]) -%}
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-3 mb-3 race-page-header">
+    <div>
+        <h2 class="mb-1">{{ race_title(name, source_label) }}{% for status in status_items %} <span class="race-title-status" title="{{ status[1] }}">{{ status[0] }}</span>{% endfor %}</h2>
+        <p class="text-muted mb-0">{{ identifier_label }}: {{ identifier }}</p>
+    </div>
+    <div class="d-flex align-items-start gap-2 race-page-actions">{{ caller() }}</div>
+</div>
+{%- endmacro %}
+
+{% macro race_results_heading(title='Overall Results') -%}
+<div class="d-flex justify-content-between align-items-center flex-wrap gap-2 mb-3 race-results-heading">
+    <h5 class="mb-0">{{ title }}</h5>
+    <div class="d-flex align-items-center flex-wrap gap-2 race-results-actions">{{ caller() }}</div>
+</div>
+{%- endmacro %}
+
+{% macro race_stage_selector(race_source, race, stage_rows, selected_stage=None, selected_stage_number=None, stage_status_map={}, result_state={}, overall_delta_status={}) -%}
+<div class="panel-card card" id="stage-selection">
+    <div class="card-body">
+        <h5 class="mb-3">Results ({{ stage_rows|length + (1 if race_source == 'firstcycling' or not (stage_rows|selectattr('is_overall')|list) else 0) }})</h5>
+        <div class="table-wrapper">
+            <table class="table table-sm align-middle mb-0">
+                <thead>
+                    <tr><th>Status</th><th>Result</th><th>Date</th><th>Profile</th><th>Distance (km)</th></tr>
+                </thead>
+                <tbody>
+                    {% for stage in stage_rows %}
+                    {% set stage_id = stage.id if race_source == 'firstcycling' else stage.stage_number %}
+                    {% set stage_status = stage_status_map.get(stage_id, {}) %}
+                    <tr {% if race_source == 'firstcycling' and selected_stage and selected_stage.id == stage.id %}class="table-primary"{% elif race_source == 'pcs' and ((stage.get('is_overall') and selected_stage_number is none) or (not stage.get('is_overall') and selected_stage_number == stage.stage_number)) %}class="table-primary"{% endif %}>
+                        <td class="text-nowrap">
+                            {% if stage_status.get('is_result_downloaded') %}<span title="Stage result downloaded">⬇️</span>{% endif %}
+                            {% if stage_status.get('has_stat_changes') %}<span title="Edits Saved">✏️</span>{% endif %}
+                            {% if stage_status.get('is_approved') %}<span class="ms-1 text-success" title="Approved">☑</span>
+                            {% elif stage_status.get('has_stat_changes') %}<span class="ms-1" title="Approval pending">⏳</span>{% endif %}
+                        </td>
+                        <td>
+                            {% if race_source == 'firstcycling' %}
+                            <a href="{{ url_for('web.stats_editor_race_detail_by_source', source='firstcycling', race_id=race.race_id, stage_id=stage.id) }}#stage-selection" class="text-decoration-none">Stage {{ stage.stage_number or '?' }} - {{ (stage.stage_start_location or '-') ~ ' to ' ~ (stage.stage_end_location or '-') }}</a>
+                            {% elif stage.get('is_overall') %}
+                            <a href="{{ url_for('web.stats_editor_race_detail_by_source', source='pcs', race_id=race.id) }}#stage-selection" class="text-decoration-none">{{ stage.name or 'General classification' }}</a>
+                            {% else %}
+                            <a href="{{ url_for('web.stats_editor_race_detail_by_source', source='pcs', race_id=race.id, pcs_stage=stage.stage_number) }}#stage-selection" class="text-decoration-none">{{ stage.name or ('Stage ' ~ stage.stage_number) }}</a>
+                            {% endif %}
+                        </td>
+                        <td>{{ stage.stage_date or '-' if race_source == 'firstcycling' else stage.get('stage_date') or '-' }}</td>
+                        <td>{% if race_source == 'pcs' and stage.get('is_overall') %}-{% else %}{{ stage.stage_profile or '-' if race_source == 'firstcycling' else stage.get('profile_display') or stage.get('profile') or '-' }}{% endif %}</td>
+                        <td>{% if race_source == 'pcs' and stage.get('is_overall') %}-{% else %}{{ stage.stage_distance_km if race_source == 'firstcycling' and stage.stage_distance_km is not none else stage.get('distance_km') if race_source == 'pcs' and stage.get('distance_km') is not none else '-' }}{% endif %}</td>
+                    </tr>
+                    {% endfor %}
+                    {% if race_source != 'pcs' or not (stage_rows|selectattr('is_overall')|list) %}
+                    <tr {% if not selected_stage and selected_stage_number is none %}class="table-primary"{% endif %}>
+                        <td class="text-nowrap">
+                            {% if race_source == 'firstcycling' and result_state.get('has_overall_result') %}<span title="Overall result downloaded">⬇️</span>{% endif %}
+                            {% if race_source == 'firstcycling' and overall_delta_status.get('total_changes', 0) > 0 %}
+                            <span title="Edits Saved">✏️</span>
+                            {% if overall_delta_status.get('unapproved_changes', 0) == 0 %}<span class="ms-1 text-success" title="Approved">☑</span>
+                            {% else %}<span class="ms-1" title="Approval pending">⏳</span>{% endif %}
+                            {% endif %}
+                        </td>
+                        <td><a href="{{ url_for('web.stats_editor_race_detail_by_source', source=race_source, race_id=race.race_id if race_source == 'firstcycling' else race.id) }}#stage-selection" class="text-decoration-none">Overall result</a></td>
+                        <td>{{ race.end_date or race.start_date or '-' if race_source == 'firstcycling' else '-' }}</td>
+                        <td>{{ race.profile or '-' if race_source == 'firstcycling' else '-' }}</td>
+                        <td>{{ race.distance_km if race_source == 'firstcycling' and race.distance_km is not none else '-' }}</td>
+                    </tr>
+                    {% endif %}
+                </tbody>
+            </table>
+        </div>
+    </div>
+</div>
+{%- endmacro %}

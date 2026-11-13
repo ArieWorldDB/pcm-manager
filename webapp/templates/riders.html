@@ -126,7 +126,7 @@
                     <tr>
                         <td>{{ rider.cyclist_id }}</td>
                         <td class="text-truncate-cell">
-                            <a href="{{ url_for('web.rider_detail', rider_id=rider.rider_id) }}">
+                            <a href="{{ url_for('web.rider_detail', rider_id=rider.rider_id, return_to=request.full_path.rstrip('?'), return_label='Back to Riders') }}">
                                 {{ rider.name or ('Rider #' ~ rider.rider_id) }}
                             </a>
                         </td>

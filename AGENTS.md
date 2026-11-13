@@ -21,6 +21,15 @@ Run from the repository root with Docker and Docker Compose. All Python setup
 and verification runs in containers; no host Python or virtual environment is needed.
 Never print or commit `.env` or secrets.
 
+### Windows Docker Desktop access
+On this Windows workstation, Docker Engine access from a normal process may fail
+with `open //./pipe/dockerDesktopLinuxEngine: Access is denied`. When that happens,
+run Docker commands from an elevated PowerShell session (Run as administrator).
+In Codex, request elevated execution for the `docker` command instead of repeatedly
+retrying it without elevation. Keep the working directory at the repository root,
+and use `docker compose exec -T ...` for non-interactive commands. Do not print
+`.env` or environment values while troubleshooting Docker access.
+
 ```text
 docker compose up -d --build
 ```

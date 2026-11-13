@@ -1,0 +1,17 @@
+{% from "_race_detail_macros.html" import race_stage_selector %}
+{% if change_export_text %}<textarea data-race-change-export data-download-filename="{{ change_export_filename }}" hidden>{{ change_export_text }}</textarea>{% endif %}
+{% if pcs_result_metadata %}<div data-pcs-race-metadata data-result-cached="true" data-classification="{{ pcs_result_metadata.classification or '' }}" data-nation="{{ pcs_result_metadata.nation_name or '' }}" data-profile="{{ pcs_result_metadata.profile_display or pcs_result_metadata.profile or '' }}" data-distance="{{ pcs_result_metadata.distance_km if pcs_result_metadata.distance_km is not none else '' }}" data-start-location="{{ pcs_result_metadata.start_location or '' }}" data-end-location="{{ pcs_result_metadata.end_location or '' }}" data-start-date="{{ pcs_result_metadata.stage_date or '' }}" hidden></div>{% endif %}
+{% if pcs_results_loading %}
+<div class="alert alert-info mb-0" role="status">Loading race results from PCS…</div>
+{% elif pcs_results_error %}
+<div class="alert alert-warning mb-0" role="alert">Could not load the PCS result: {{ pcs_results_error }}</div>
+{% elif result_rows or stage_rows %}
+{% if stage_rows %}
+{{ race_stage_selector('pcs', pcs_race, stage_rows, none, selected_stage_number) }}
+{% endif %}
+{% if result_rows %}
+{% include '_race_results_table.html' %}
+{% else %}<div class="alert alert-info mb-0">No race results are available for this selection.</div>{% endif %}
+{% else %}
+<div class="alert alert-info mb-0">No race results are available from PCS.</div>
+{% endif %}

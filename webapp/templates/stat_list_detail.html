@@ -1,20 +1,9 @@
 {% extends "base.html" %}
 
 {% block title %}Stat List - WDB{% endblock %}
+{% block body_class %}stats-editor-page{% endblock %}
 
 {% block styles %}
-body > .container {
-    max-width: 1760px;
-}
-.panel-card {
-    background: white;
-    border-radius: 8px;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
-    margin-bottom: 20px;
-}
-.panel-card .card-body {
-    padding: 20px;
-}
 .table-wrapper {
     overflow-x: auto;
 }
@@ -24,52 +13,52 @@ body > .container {
 }
 /* Stat value background color classes (same as teams_detail/stat_race_detail) */
 .stat-value.range-low {
-    background-color: #6c757d !important;
+    background-color: #52565a !important;
     color: #ffffff !important;
 }
 .stat-value.range-decent {
-    background-color: var(--brand-primary) !important;
+    background-color: #3886fe !important;
     color: #ffffff !important;
 }
 .stat-value.range-good {
-    background-color: #90ee90 !important;
+    background-color: #28fc8b !important;
     color: #000000 !important;
 }
 .stat-value.range-very-good {
-    background-color: #ffd700 !important;
+    background-color: #fde13b !important;
     color: #000000 !important;
 }
 .stat-value.range-excellent {
-    background-color: #ff8c00 !important;
+    background-color: #fdb927 !important;
     color: #000000 !important;
 }
 .stat-value.range-elite {
-    background-color: #dc3545 !important;
+    background-color: #fd2756 !important;
     color: #ffffff !important;
 }
 /* Editable stat inputs need their own color classes, matching stat_race_detail */
 .stat-input.range-low {
-    background-color: #6c757d !important;
+    background-color: #52565a !important;
     color: #ffffff !important;
 }
 .stat-input.range-decent {
-    background-color: var(--brand-primary) !important;
+    background-color: #3886fe !important;
     color: #ffffff !important;
 }
 .stat-input.range-good {
-    background-color: #90ee90 !important;
+    background-color: #28fc8b !important;
     color: #000000 !important;
 }
 .stat-input.range-very-good {
-    background-color: #ffd700 !important;
+    background-color: #fde13b !important;
     color: #000000 !important;
 }
 .stat-input.range-excellent {
-    background-color: #ff8c00 !important;
+    background-color: #fdb927 !important;
     color: #000000 !important;
 }
 .stat-input.range-elite {
-    background-color: #dc3545 !important;
+    background-color: #fd2756 !important;
     color: #ffffff !important;
 }
 .stat-input-row {
@@ -81,8 +70,8 @@ body > .container {
     position: relative;
 }
 .stat-input-row.has-stat-delta {
-    border-color: #f5f500;
-    box-shadow: inset 0 0 0 2px #f5f500;
+    border-color: #f59f00;
+    box-shadow: inset 0 0 0 2px #f59f00;
 }
 .delta-display {
     min-width: 26px;
@@ -101,11 +90,6 @@ body > .container {
     border-radius: 0;
     background: transparent;
     order: 2;
-}
-body.dark-mode .panel-card {
-    background: #2d3748;
-    box-shadow: none;
-    border: 1px solid #4a5568;
 }
 body.dark-mode .table {
     --bs-table-bg: #111827;
@@ -132,13 +116,13 @@ body.dark-mode .stat-input-row.has-stat-delta {
 }
 
 /* Dark mode for new bordered sections */
-body.dark-mode .panel-card .border.bg-light {
+body.dark-mode .stats-editor-page .panel-card .border.bg-light {
     background-color: #232a36 !important;
     border-color: #4b5563 !important;
 }
-body.dark-mode .panel-card .border.bg-light h6,
-body.dark-mode .panel-card .border.bg-light label,
-body.dark-mode .panel-card .border.bg-light {
+body.dark-mode .stats-editor-page .panel-card .border.bg-light h6,
+body.dark-mode .stats-editor-page .panel-card .border.bg-light label,
+body.dark-mode .stats-editor-page .panel-card .border.bg-light {
     color: #f9fafb !important;
 }
 .page-header-status {
@@ -262,6 +246,7 @@ body.dark-mode .panel-card .border.bg-light {
                             {% for stat_key in stat_fields %}
                             <th class="stat-col">{{ stat_key|upper }}</th>
                             {% endfor %}
+                            <th class="stat-col">POT</th>
                         </tr>
                     </thead>
                     <tbody>
@@ -280,7 +265,7 @@ body.dark-mode .panel-card .border.bg-light {
                             </td>
                             <td class="{% if not row.rider_in_namespace %}text-muted{% endif %}">
                                 {% if row.rider_link_id %}
-                                <a href="{{ url_for('web.rider_detail', rider_id=row.rider_link_id) }}" class="text-reset text-decoration-none">
+                                <a href="{{ url_for('web.rider_detail', rider_id=row.rider_link_id, return_to=request.full_path.rstrip('?'), return_label='Back to Stats Editor') }}" class="text-reset text-decoration-none">
                                     {{ row.rider_name }}
                                 </a>
                                 {% else %}
@@ -308,6 +293,17 @@ body.dark-mode .panel-card .border.bg-light {
                                 {% else %}-{% endif %}
                             </td>
                             {% endfor %}
+                            {% set potential_value = stat_values.get('potential') %}
+                            {% set original_potential_value = original_stat_values.get('potential') %}
+                            <td class="stat-cell stat-col potential-cell">
+                                {% if potential_value is not none %}
+                                <span class="stat-edit-value stat-edit-potential-value">{{ '%g'|format(potential_value / 2)|replace('.', ',') }}</span>
+                                {% if original_potential_value is not none and potential_value != original_potential_value %}
+                                {% set potential_delta = (potential_value - original_potential_value) / 2 %}
+                                <span class="{% if potential_delta > 0 %}stat-edit-delta-up{% else %}stat-edit-delta-down{% endif %}">{% if potential_delta > 0 %}+{% endif %}{{ '%g'|format(potential_delta)|replace('.', ',') }}</span>
+                                {% endif %}
+                                {% else %}—{% endif %}
+                            </td>
                         </tr>
                         {% endfor %}
                     </tbody>
@@ -343,6 +339,7 @@ body.dark-mode .panel-card .border.bg-light {
                         {% for stat_key in stat_fields %}
                         <th class="stat-col">{{ stat_key|upper }}</th>
                         {% endfor %}
+                        <th class="stat-col">POT</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -369,6 +366,7 @@ body.dark-mode .panel-card .border.bg-light {
                             {{ rider.stats[stat_key] if rider.stats and stat_key in rider.stats else '-' }}
                         </td>
                         {% endfor %}
+                        <td>{% if rider.stats.get('potential') is not none %}{{ '%g'|format(rider.stats.get('potential') / 2)|replace('.', ',') }}{% else %}—{% endif %}</td>
                     </tr>
                     {% endfor %}
                 </tbody>

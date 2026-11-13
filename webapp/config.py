@@ -135,7 +135,7 @@ class Config:
     
     # External API
     FIRST_CYCLING_BASE_URL = os.getenv('FIRST_CYCLING_BASE_URL', 'https://firstcycling.com')
-    FIRST_CYCLING_API_PATH = os.getenv('FIRST_CYCLING_API_PATH')
+    FIRST_CYCLING_API_PATH = os.getenv('FIRST_CYCLING_API_PATH') or 'dora'
     FIRST_CYCLING_SYNC_VERBOSE = _env_bool('FIRST_CYCLING_SYNC_VERBOSE', False)
     FIRST_CYCLING_SYNC_LOG_INTERVAL = int(os.getenv('FIRST_CYCLING_SYNC_LOG_INTERVAL', '50'))
     FIRST_CYCLING_SYNC_METHOD = os.getenv('FIRST_CYCLING_SYNC_METHOD', 'bulk_refresh')

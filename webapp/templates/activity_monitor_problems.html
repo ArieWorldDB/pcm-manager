@@ -59,7 +59,7 @@
             {% for check in source_problems %}
             <tr>
                 <td data-sort-value="{{ check.checked_at.isoformat() if check.checked_at else '' }}">{{ check.checked_at|activity_datetime }}</td>
-                <td data-sort-value="{{ ((check.first_name ~ ' ' ~ check.last_name).strip() or 'Unknown rider')|lower }}">{% if check.rider_id %}<a href="{{ url_for('web.activity_monitor_rider_detail', rider_id=check.rider_id) }}">{{ (check.first_name ~ ' ' ~ check.last_name).strip() or 'Unknown rider' }}</a>{% else %}Unknown rider{% endif %}</td>
+                <td data-sort-value="{{ ((check.first_name ~ ' ' ~ check.last_name).strip() or 'Unknown rider')|lower }}">{% if check.rider_id and check.source_worlddb_rider_id %}<a href="{{ url_for('web.rider_detail', rider_id=check.source_worlddb_rider_id, tab='activity', activity_rider_id=check.rider_id, return_to=request.full_path.rstrip('?'), return_label='Back to Activity Monitor') }}">{{ (check.first_name ~ ' ' ~ check.last_name).strip() or 'Unknown rider' }}</a>{% else %}{{ (check.first_name ~ ' ' ~ check.last_name).strip() or 'Unknown rider' }}{% endif %}</td>
                 <td data-sort-value="{{ check.birth_date.isoformat() if check.birth_date else '' }}">{{ check.birth_date.isoformat() if check.birth_date else '—' }}</td>
                 <td data-sort-value="{{ check.source_worlddb_rider_id or '' }}">{{ check.source_worlddb_rider_id or '—' }}</td>
                 {% set website_label = (check.source or 'unknown')|lower %}

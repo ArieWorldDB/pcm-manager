@@ -1,40 +1,13 @@
-{% extends "base.html" %}
-
-{% block title %}Rider Activity History - WDB{% endblock %}
-{% block body_class %}activity-monitor-page{% endblock %}
-
-{% block styles %}
-.activity-detail-table { min-width: 760px; }
-.activity-detail-results-table { min-width: 1040px; }
-.activity-detail-checks-table { min-width: 1180px; }
-.activity-detail-table th { white-space: nowrap; }
-.activity-detail-table td { vertical-align: middle; }
-.activity-detail-summary-card { border-top: 3px solid #128577; }
-.activity-detail-summary-card .card-body { padding: .7rem .8rem; }
-.activity-detail-summary-value { font-size: 1.05rem; font-weight: 700; line-height: 1.2; }
-.activity-detail-summary-card .text-muted { font-size: .9rem; }
-.activity-detail-extra-result[hidden] { display: none; }
-.activity-rider-detail-header { display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, 2fr) minmax(max-content, 1fr); align-items: center; gap: 1rem; }
-.activity-rider-detail-header-facts { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: .5rem 1.4rem; }
-.activity-rider-detail-header-fact { min-width: 105px; }
-@media (max-width: 1199.98px) { .activity-rider-detail-header { grid-template-columns: 1fr auto; } .activity-rider-detail-header-facts { grid-column: 1 / -1; justify-content: flex-start; } }
-body.dark-mode .activity-detail-summary-card { background: #2d3748; }
-{% endblock %}
-
-{% block content %}
 {% if selected_namespace %}
-{% set activity_monitor_active = 'riders' %}
-{% include 'activity_monitor_nav.html' %}
-
 <div class="mb-3">
     {% if rider %}
     <div class="activity-rider-detail-header">
           <div>
-            <h2 class="mb-1">{{ (rider.first_name ~ ' ' ~ rider.last_name).strip() or 'Unknown rider' }}</h2>
+            <p class="text-muted mb-0">{{ rider_abbreviated_name or 'Unknown rider' }}</p>
             <p class="text-muted mb-0">WorldDB #{{ rider.worlddb_rider_id or '—' }}{% if rider.first_cycling_id %} · FirstCycling {{ rider.first_cycling_id }}{% endif %}</p>
           </div>
           <div class="activity-rider-detail-header-facts" aria-label="WorldDB identity details">
-            <div class="activity-rider-detail-header-fact"><div class="text-muted small">Team</div><div>{{ rider.team_name or '—' }}</div></div>
+            <div class="activity-rider-detail-header-fact"><div class="text-muted small">Team</div><div>{% if stats_rider.team_id and team %}<a href="{{ url_for('web.team_detail', team_id=stats_rider.team_id) }}">{{ team.team_name or stats_rider.team_name or ('Team #' ~ stats_rider.team_id) }}</a>{% elif stats_rider.team_id %}{{ stats_rider.team_name or ('Team #' ~ stats_rider.team_id) }}{% else %}{{ rider.team_name or '—' }}{% endif %}</div></div>
             <div class="activity-rider-detail-header-fact"><div class="text-muted small">Division</div><div>{{ rider.division_name }}</div></div>
             <div class="activity-rider-detail-header-fact"><div class="text-muted small">Nationality</div><div>{{ rider.nationality }}</div></div>
             <div class="activity-rider-detail-header-fact"><div class="text-muted small">Date of birth</div><div>{{ rider.birth_date or '—' }}</div></div>
@@ -43,16 +16,16 @@ body.dark-mode .activity-detail-summary-card { background: #2d3748; }
             {% if rider.is_retired %}
             <span class="badge text-bg-secondary">Retired</span>
             {% elif can_retire_rider %}
-            <form method="post" action="{{ url_for('web.activity_monitor_retire_rider', rider_id=rider.id) }}">
+            <form method="post" action="{{ url_for('web.activity_monitor_retire_rider', rider_id=rider.id) }}" onsubmit="return confirm('Are you sure?');">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 <button type="submit" class="btn btn-sm btn-danger w-100">Retire this rider</button>
             </form>
             {% endif %}
-            <a href="{{ back_url }}" class="btn btn-sm btn-outline-secondary">← Back to riders</a>
+            <a href="{{ back_url }}" class="btn btn-sm btn-outline-secondary">← Riders Activity Tabel</a>
         </div>
     </div>
     {% if rider.identity_hold %}<div class="alert alert-warning mt-3 mb-0"><strong>Identity hold:</strong> {{ rider.identity_hold_reason or 'Review this rider identity before using new results.' }}</div>{% endif %}
-    {% else %}<a href="{{ back_url }}" class="btn btn-sm btn-outline-secondary mb-3">← Back to riders</a>
+    {% else %}<a href="{{ back_url }}" class="btn btn-sm btn-outline-secondary mb-3">← Riders Activity Tabel</a>
     {% endif %}
 </div>
 
@@ -198,21 +171,3 @@ body.dark-mode .activity-detail-summary-card { background: #2d3748; }
 {% else %}
 <div class="alert alert-info">Select an active namespace to open its Activity Monitor.</div>
 {% endif %}
-{% endblock %}
-
-{% block scripts %}
-{{ super() }}
-<script>
-(() => {
-    const button = document.getElementById('activity-evidence-toggle');
-    const extraRows = document.querySelectorAll('.activity-detail-extra-result');
-    if (!button || extraRows.length === 0) return;
-    button.addEventListener('click', () => {
-        const expanded = button.getAttribute('aria-expanded') === 'true';
-        extraRows.forEach((row) => { row.hidden = expanded; });
-        button.setAttribute('aria-expanded', String(!expanded));
-        button.textContent = expanded ? 'More' : 'Less';
-    });
-})();
-</script>
-{% endblock %}
