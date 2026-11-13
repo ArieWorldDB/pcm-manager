@@ -61,17 +61,18 @@ def init_extensions(app):
         result_backend=app.config.get('REDIS_URL', 'redis://localhost:6379/0'),
     )
     celery.conf.timezone = 'Europe/Amsterdam'
-    celery.conf.beat_schedule = {
-        **(celery.conf.beat_schedule or {}),
-        'poll-activity-monitor-schedules': {
-            'task': 'webapp.tasks.poll_activity_monitor_schedules',
-            'schedule': 60.0,
-        },
-        'sync-pcs-national-race-calendar-daily': {
+    beat_schedule = dict(celery.conf.beat_schedule or {})
+    beat_schedule['poll-activity-monitor-schedules'] = {
+        'task': 'webapp.tasks.poll_activity_monitor_schedules',
+        'schedule': 60.0,
+    }
+    beat_schedule.pop('sync-pcs-national-race-calendar-daily', None)
+    if app.config.get('PCS_CALENDAR_SCHEDULE_ENABLED', False):
+        beat_schedule['sync-pcs-national-race-calendar-daily'] = {
             'task': 'webapp.tasks.sync_pcs_national_race_calendar',
             'schedule': crontab(hour=4, minute=15),
-        },
-    }
+        }
+    celery.conf.beat_schedule = beat_schedule
     
     class ContextTask(celery.Task):
         """Make celery tasks work with Flask app context"""

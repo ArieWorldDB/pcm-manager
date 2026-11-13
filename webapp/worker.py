@@ -465,6 +465,10 @@ def sync_firstcycling_race_team_names_task(race_database_id):
 @_celery.task(name='webapp.tasks.sync_pcs_national_race_calendar')
 def sync_pcs_national_race_calendar_task():
     """Daily scan of PCS national race results for the current year."""
+    from flask import current_app
+
+    if not current_app.config.get('PCS_CALENDAR_SCHEDULE_ENABLED', False):
+        return {'status': 'disabled'}
     year = datetime.now(ZoneInfo('Europe/Amsterdam')).year
     sync_log = ExternalSyncLog(
         provider='pcs',
@@ -803,11 +807,16 @@ def poll_activity_monitor_schedules():
                            to_regclass('activity_monitor_runs') IS NOT NULL AS has_runs,
                            to_regclass('activity_monitor_tasks') IS NOT NULL AS has_tasks
                 """)).mappings().one()
-                if tables['has_runs'] and tables['has_tasks']:
+                if tables['has_runs'] and tables['has_tasks'] and tables['has_schedule']:
                     pending_run_id = connection.execute(text("""
                         SELECT r.id
                         FROM activity_monitor_runs r
                         WHERE r.status IN ('queued', 'running', 'retry_wait')
+                          AND r.run_type = 'scheduled'
+                          AND EXISTS (
+                              SELECT 1 FROM activity_monitor_schedules s
+                              WHERE s.schedule_key = 'activity-monitor' AND s.enabled
+                          )
                           AND COALESCE(r.heartbeat_at, r.started_at, r.created_at) <= :recovery_before
                           AND EXISTS (
                               SELECT 1 FROM activity_monitor_tasks t

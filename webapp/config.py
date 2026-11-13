@@ -145,6 +145,7 @@ class Config:
     FIRST_CYCLING_RETRY_BACKOFF_SECONDS = float(os.getenv('FIRST_CYCLING_RETRY_BACKOFF_SECONDS', '3'))
 
     # Activity Monitor profile checks remain opt-in until each source is configured.
+    PCS_CALENDAR_SCHEDULE_ENABLED = _env_bool('PCS_CALENDAR_SCHEDULE_ENABLED', False)
     ACTIVITY_MONITOR_PCS_ENABLED = _env_bool('ACTIVITY_MONITOR_PCS_ENABLED', False)
     ACTIVITY_MONITOR_FC_ENABLED = _env_bool('ACTIVITY_MONITOR_FC_ENABLED', False)
     ACTIVITY_MONITOR_REQUEST_DELAY_SECONDS = float(

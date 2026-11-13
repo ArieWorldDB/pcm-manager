@@ -23,6 +23,7 @@ Pillow==13.0.0
 # Background Jobs
 redis==5.0.1
 celery==5.3.4
+kombu==5.6.2
 
 # Security
 Flask-Bcrypt==1.0.1
