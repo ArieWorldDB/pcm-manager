@@ -32,6 +32,7 @@ CDB_TABLE_MAPPINGS:
         first_last_name: gene_sz_firstlastname
         birth_date: gene_i_birthdate
         weight_kg: gene_i_weight
+        potential: value_f_potentiel
         size_cm: gene_i_size
         stat_fla: charac_i_plain
         stat_mo: charac_i_mountain

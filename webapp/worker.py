@@ -442,6 +442,66 @@ def run_external_sync_task(log_id, sync_type, season_year, gender, api_path=None
         raise
 
 
+@_celery.task(name='webapp.tasks.sync_firstcycling_race_team_names')
+def sync_firstcycling_race_team_names_task(race_database_id):
+    """Fetch missing API team names after race results have been saved."""
+    try:
+        client = FirstCyclingClient()
+        summary = client.sync_missing_race_team_names(race_database_id, commit=True)
+        logger.info(
+            'FirstCycling race team names synced: race_id=%s teams=%s/%s (failed=%s)',
+            race_database_id,
+            summary['requested'],
+            summary['fetched'],
+            summary['failed'],
+        )
+        return summary
+    except Exception:
+        db.session.rollback()
+        logger.exception('Could not sync FirstCycling team names for race %s', race_database_id)
+        raise
+
+
+@_celery.task(name='webapp.tasks.sync_pcs_national_race_calendar')
+def sync_pcs_national_race_calendar_task():
+    """Daily scan of PCS national race results for the current year."""
+    year = datetime.now(ZoneInfo('Europe/Amsterdam')).year
+    sync_log = ExternalSyncLog(
+        provider='pcs',
+        sync_type='pcs_national_race_calendar',
+        season_year=year,
+        gender='men',
+        status='running',
+        message=f'Scanning PCS national races for {year}',
+    )
+    db.session.add(sync_log)
+    db.session.commit()
+    try:
+        from webapp.integrations.pcs.calendar import sync_national_races
+
+        summary = sync_national_races(year=year)
+        sync_log.status = 'partial' if summary['failed'] else 'success'
+        sync_log.requested_count = summary['requested']
+        sync_log.synced_count = summary['races']
+        sync_log.failed_count = summary['failed']
+        sync_log.message = (
+            f"PCS national calendar checked for {year}: {summary['races']} races, "
+            f"{summary['failed']} pages failed"
+        )
+        sync_log.details_json = json.dumps(summary)
+        db.session.commit()
+        return summary
+    except Exception as exc:
+        db.session.rollback()
+        existing_log = ExternalSyncLog.query.get(sync_log.id)
+        if existing_log:
+            existing_log.status = 'failed'
+            existing_log.message = f'PCS national calendar sync failed: {str(exc)[:180]}'
+            db.session.commit()
+        logger.exception('PCS national race calendar task failed for %s', year)
+        raise
+
+
 def __getattr__(name):
     """Initialize Flask only when the Celery CLI loads the worker app."""
     global _worker_app

@@ -22,27 +22,27 @@
         }
     /* Stat value background color classes (copied from stat_race_detail.html) */
     .stat-value.range-low {
-        background-color: #6c757d !important;
+        background-color: #52565a !important;
         color: #ffffff !important;
     }
     .stat-value.range-decent {
-        background-color: var(--brand-primary) !important;
+        background-color: #3886fe !important;
         color: #ffffff !important;
     }
     .stat-value.range-good {
-        background-color: #90ee90 !important;
+        background-color: #28fc8b !important;
         color: #000000 !important;
     }
     .stat-value.range-very-good {
-        background-color: #ffd700 !important;
+        background-color: #fde13b !important;
         color: #000000 !important;
     }
     .stat-value.range-excellent {
-        background-color: #ff8c00 !important;
+        background-color: #fdb927 !important;
         color: #000000 !important;
     }
     .stat-value.range-elite {
-        background-color: #dc3545 !important;
+        background-color: #fd2756 !important;
         color: #ffffff !important;
     }
     /* Center stat values and reduce stat column width */
@@ -257,7 +257,7 @@ document.addEventListener('DOMContentLoaded', function () {
                     {% set rider_stats = (rider_stats_map | default({})).get(rider.rider_id, {}) %}
                     <tr>
                         <td>
-                            <a href="{{ url_for('web.rider_detail', rider_id=rider.rider_id, team_id=team.team_id) }}">
+                            <a href="{{ url_for('web.rider_detail', rider_id=rider.rider_id, team_id=team.team_id, return_to=request.full_path.rstrip('?'), return_label='Back to ' ~ team.team_name) }}">
                                 {{ rider.name or ((rider.first_name or '') ~ ' ' ~ (rider.last_name or ''))|trim or ('Rider #' ~ rider.rider_id) }}
                             </a>
                         </td>

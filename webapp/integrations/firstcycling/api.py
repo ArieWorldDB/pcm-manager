@@ -437,6 +437,20 @@ class FirstCyclingClient:
         except (TypeError, ValueError):
             return None
 
+    def _team_id_from_payload(self, payload):
+        """Read team IDs from the shapes used by race and rider API payloads."""
+        if not isinstance(payload, dict):
+            return None
+
+        team_data = payload.get('team')
+        description = payload.get('description')
+        candidates = [payload.get('teamId')]
+        if isinstance(team_data, dict):
+            candidates.extend((team_data.get('teamId'), team_data.get('id')))
+        if isinstance(description, dict):
+            candidates.append(description.get('teamId'))
+        return next((team_id for value in candidates if (team_id := self._parse_int(value)) is not None), None)
+
     def _parse_input_date(self, value, field_name):
         if value is None:
             raise ValueError(f'{field_name} is required')
@@ -550,7 +564,14 @@ class FirstCyclingClient:
         rankings = payload.get('rankings', {}) if isinstance(payload, dict) else {}
         synced_at = synced_at or datetime.utcnow()
 
-        team_name = description.get('teamName') or self._extract_entity_name(payload)
+        team_data = payload.get('team') if isinstance(payload, dict) else None
+        team_name = (
+            description.get('teamName')
+            or description.get('name')
+            or self._extract_entity_name(payload)
+        )
+        if not team_name and isinstance(team_data, dict):
+            team_name = team_data.get('teamName') or team_data.get('name')
 
         return {
             'team_id': team_id,
@@ -597,10 +618,7 @@ class FirstCyclingClient:
         last_name = description.get('lastName')
         full_name = ' '.join(part for part in [first_name, last_name] if part).strip()
 
-        raw_team_id = team_data.get('teamId') if isinstance(team_data, dict) else None
-        if raw_team_id is None and isinstance(description, dict):
-            raw_team_id = description.get('teamId')
-        team_id = self._parse_int(raw_team_id)
+        team_id = self._team_id_from_payload(payload)
 
         team_name = None
         if isinstance(team_data, dict):
@@ -1498,7 +1516,7 @@ class FirstCyclingClient:
                 season_year=season_year,
             )
 
-            team_id = self._parse_int(rider_row.get('teamId'))
+            team_id = self._team_id_from_payload(rider_row)
             is_still_in_race = self._parse_is_still_in_race(rider_row.get('stillInTheRace'))
 
             overall = rider_row.get('overall')
@@ -1591,6 +1609,74 @@ class FirstCyclingClient:
             'skipped_riders': skipped_riders,
             'skipped_stage_rows': skipped_stage_rows,
             'skipped_non_road_race': False,
+        }
+
+    def sync_missing_race_team_names(self, race_database_id, commit=True):
+        """Fetch team records referenced by race results or their riders."""
+        team_ids = {
+            team_id
+            for (team_id,) in self.db_session.query(FirstCyclingRaceResult.team_id)
+            .filter(
+                FirstCyclingRaceResult.race_id == race_database_id,
+                FirstCyclingRaceResult.team_id.isnot(None),
+            )
+            .distinct()
+            .all()
+        }
+        rider_ids = {
+            rider_id
+            for (rider_id,) in self.db_session.query(FirstCyclingRaceResult.rider_id)
+            .filter(FirstCyclingRaceResult.race_id == race_database_id)
+            .distinct()
+            .all()
+        }
+        if rider_ids:
+            team_ids.update(
+                team_id
+                for (team_id,) in self.db_session.query(FirstCyclingRider.team_id)
+                .filter(
+                    FirstCyclingRider.rider_id.in_(rider_ids),
+                    FirstCyclingRider.team_id.isnot(None),
+                )
+                .distinct()
+                .all()
+            )
+        if not team_ids:
+            return {'requested': 0, 'fetched': 0, 'failed': 0}
+
+        existing_teams = self.db_session.query(FirstCyclingTeam).filter(
+            FirstCyclingTeam.team_id.in_(team_ids)
+        ).all()
+        known_team_ids = {
+            team.team_id
+            for team in existing_teams
+            if team.team_name and team.team_name.strip()
+        }
+        missing_team_ids = sorted(team_ids - known_team_ids)
+        fetched = 0
+        failures = []
+        for team_id in missing_team_ids:
+            try:
+                team_payload, team_source_endpoint = self.get_team(team_id)
+                team = self._upsert_team(
+                    team_id=team_id,
+                    payload=team_payload,
+                    source_endpoint=team_source_endpoint,
+                )
+                if team.team_name:
+                    fetched += 1
+                else:
+                    failures.append(team_id)
+            except Exception:
+                failures.append(team_id)
+                logger.exception('Could not fetch FirstCycling team for race result: team_id=%s', team_id)
+
+        if commit:
+            self.db_session.commit()
+        return {
+            'requested': len(missing_team_ids),
+            'fetched': fetched,
+            'failed': len(failures),
         }
 
     def sync_season_roster(self, season_year, gender, commit=True):

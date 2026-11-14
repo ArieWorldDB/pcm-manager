@@ -6,6 +6,7 @@ from flask_bcrypt import Bcrypt
 from flask_wtf.csrf import CSRFProtect
 from flask_marshmallow import Marshmallow
 from celery import Celery
+from celery.schedules import crontab
 import os
 
 # Initialize extensions (will be bound to app in create_app)
@@ -65,6 +66,10 @@ def init_extensions(app):
         'poll-activity-monitor-schedules': {
             'task': 'webapp.tasks.poll_activity_monitor_schedules',
             'schedule': 60.0,
+        },
+        'sync-pcs-national-race-calendar-daily': {
+            'task': 'webapp.tasks.sync_pcs_national_race_calendar',
+            'schedule': crontab(hour=4, minute=15),
         },
     }
     

@@ -16,14 +16,19 @@ from urllib.parse import urljoin, urlsplit
 
 PCS_ORIGIN = "https://www.procyclingstats.com"
 RESULTS_TABLE_CLASS = "rdrResults"
-_DATE = re.compile(r"^(\d{1,2})\.(\d{1,2})(?:\.(\d{2,4}))?$")
-_DATE_RANGE = re.compile(r"^\s*\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\s*[–—-]\s*\d{1,2}\.\d{1,2}(?:\.\d{2,4})?\s*$")
+_DATE = re.compile(r"^(\d{1,2})[./-](\d{1,2})(?:[./-](\d{2,4}))?$")
+_DATE_PART = r"\d{1,2}[./-]\d{1,2}(?:[./-]\d{2,4})?"
+_DATE_RANGE = re.compile(
+    rf"^\s*({_DATE_PART})\s*(?:/\s*|[–—]\s*|\s+-\s*|(?<=\d)-(?=\d{{1,2}}\.))"
+    rf"\s*({_DATE_PART})\s*$"
+)
 _POSITION = re.compile(r"^\d{1,4}$")
 _PARTICIPATION_STATUSES = {"DNF", "OOT", "OTL", "DSQ"}
 _NON_PARTICIPATION_STATUSES = {"AB", "HD"}
 _CATEGORY = re.compile(r"\s*\((NAT|NC|C[1-4]|CX|\d(?:\.\d)?(?:\.\d)?|\d\.[A-Z]{2,4})\)\s*$", re.I)
 _YEAR = re.compile(r"(?:^|[-_/])(20\d{2})(?=[-_/]|$)")
 _STAGE = re.compile(r"(?:^|[-_/])stage-(\d+)(?:[-_/]|$)", re.I)
+_ORDINAL_STAGE = re.compile(r"\b(\d+)(?:st|nd|rd|th)\s+stage\b", re.I)
 
 
 def _normal(value: str) -> str:
@@ -326,7 +331,10 @@ def parse_pcs_html(html: str | bytes, *, rider_id: int, profile_url: str,
         stage_number = stage_from_link
         if stage_number is None:
             stage_match = re.search(r"\bStage\s+(\d+)\b", race_text, re.I)
-            stage_number = int(stage_match.group(1)) if stage_match else None
+            ordinal_match = _ORDINAL_STAGE.search(race_text)
+            stage_number = int(stage_match.group(1)) if stage_match else (
+                int(ordinal_match.group(1)) if ordinal_match else None
+            )
         is_stage = stage_number is not None or "stage" in row_classes
 
         if range_heading or (not result_text and not is_classification):
@@ -397,9 +405,21 @@ def parse_pcs_html(html: str | bytes, *, rider_id: int, profile_url: str,
             "stage_name": stage_name,
             "row_type": row_type,
             "result": result_text,
+            "gc_position": result_text if row_type == "classification" else "",
             "participation_status": participation,
             "confirmed_participation": participation == "confirmed_participation",
         })
+
+    # PCS profile tables sometimes repeat the race start date on every stage
+    # and GC row. Keep those dates as source dates until the stage detail page
+    # supplies its actual date; the caller can enrich them using ``stage_path``.
+    for row in parsed_rows:
+        if row["row_type"] == "stage_result" and row.get("stage_number") is not None:
+            path = urlsplit(row["race_url"]).path.rstrip("/")
+            race_path = re.sub(
+                r"-(?:stage-\d+)?(?:-(?:result|gc))?$", "", path, flags=re.I,
+            )
+            row["stage_path"] = f"{race_path}-stage-{row['stage_number']}"
 
     identity = verify_identity(facts, profile_url, expected_identity, confirmed_rows=parsed_rows, as_of=as_of)
     confirmed = [row for row in parsed_rows if row["confirmed_participation"]]
@@ -457,11 +477,28 @@ def to_activity_monitor_evidence(parsed: dict, *, rider_id: int,
             "season": int(season),
             "date": result_date,
             "race_url": row.get("race_url") or "",
-            "row_type": row.get("row_type") or "",
-            "stage_number": row.get("stage_number"),
-            "stage_name": row.get("stage_name") or "",
             "result": row.get("result") or "",
         }
+        is_general_classification = (
+            str(row.get("row_type") or "").casefold() in {
+                "classification", "overall", "gc", "general_classification",
+            }
+            and row.get("stage_number") is None
+        )
+        if is_general_classification:
+            # PCS may expose one GC via a canonical -gc URL and another via a
+            # race context URL. They are the same database evidence for this rider.
+            race_path = urlsplit(row.get("race_url") or "").path.rstrip("/")
+            race_path = re.sub(r"-gc$", "", race_path, flags=re.IGNORECASE)
+            key_fields["race_path"] = race_path.casefold()
+            key_fields.pop("race_url", None)
+            key_fields["row_type"] = "general_classification"
+        else:
+            key_fields.update({
+                "row_type": row.get("row_type") or "",
+                "stage_number": row.get("stage_number"),
+                "stage_name": row.get("stage_name") or "",
+            })
         if first_cycling_id is None:
             key_fields["source_identity"] = result_identity
             key_fields["identity_generation"] = identity_generation
@@ -490,8 +527,13 @@ def to_activity_monitor_evidence(parsed: dict, *, rider_id: int,
             "stage_number": row.get("stage_number"),
             "stage_name": row.get("stage_name") or "",
             "row_type": row.get("row_type") or "unknown",
-            "result_position": row.get("result") or "",
-            "gc_position": "",
+            "result_position": (
+                "" if row.get("row_type") in {
+                    "classification", "overall", "gc", "general_classification",
+                } and row.get("stage_number") is None
+                else row.get("result") or ""
+            ),
+            "gc_position": row.get("gc_position") or "",
             "participation_status": row.get("participation_status") or "not_confirmed",
             "source": "pcs",
             "source_check_id": source_check_id,

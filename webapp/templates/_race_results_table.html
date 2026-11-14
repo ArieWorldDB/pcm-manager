@@ -1,0 +1,80 @@
+{% if result_rows %}
+<div class="d-flex flex-wrap align-items-center gap-3 mb-3" role="group" aria-label="Table filters">
+    <span class="text-muted">Table filters</span>
+    <div class="form-check mb-0">
+        <input class="form-check-input" type="checkbox" id="results-had-edits">
+        <label class="form-check-label" for="results-had-edits">Had Edits</label>
+    </div>
+    {% if time_separators_allowed %}<div class="form-check mb-0">
+        <input class="form-check-input" type="checkbox" id="results-time-separators" checked>
+        <label class="form-check-label" for="results-time-separators">Time gaps</label>
+    </div>{% endif %}
+    <div class="d-flex align-items-center gap-2">
+        <label for="results-team-filter" class="form-label mb-0">Team</label>
+        <select id="results-team-filter" class="form-select form-select-sm w-auto"><option value="">All teams</option></select>
+    </div>
+</div>
+<div class="table-wrapper results-table-wrapper">
+    <table class="table table-sm table-hover align-middle mb-0 results-table" data-time-separators-allowed="{{ 'true' if time_separators_allowed else 'false' }}">
+        <thead><tr>
+            <th class="sortable-col sort-asc" data-sort-type="number">Pos.</th>
+            <th aria-label="Nationality"></th>
+            <th class="sortable-col" data-sort-type="text">First name</th>
+            <th class="sortable-col" data-sort-type="text">Last name</th>
+            <th class="sortable-col" data-sort-type="text">Nationality</th>
+            <th class="sortable-col" data-sort-type="text">Team</th>
+            <th class="sortable-col" data-sort-type="number">Age</th>
+            <th class="text-end">Time</th>
+            {% for stat_key in stat_fields %}<th class="stat-col sortable-col" data-sort-type="number">{{ stat_key|upper }}</th>{% endfor %}
+            <th class="sortable-col" data-sort-type="number">POT</th>
+        </tr></thead>
+        <tbody>
+        {% for row in result_rows %}
+            <tr data-filter-team="{{ row.team_name }}" data-result-time="{{ '0.00' if row.position == 1 else row.time or '' }}">
+                <td data-sort-value="{{ row.position if row.position is not none else 999999 }}">{{ row.position_display }}</td>
+                <td class="nationality-flag" title="{{ row.nationality or '' }}" aria-label="{{ row.nationality or 'Unknown nationality' }}">
+                    {% if row.nationality_flag_code %}<img src="https://flagcdn.com/24x18/{{ row.nationality_flag_code }}.png" width="24" height="24" alt="{{ row.nationality }} flag" loading="lazy" referrerpolicy="no-referrer">{% endif %}
+                </td>
+                <td class="{% if not row.editable %}text-muted{% endif %}">{% if row.rider_url %}<a href="{{ row.rider_url }}" {% if row.rider_url_external %}target="_blank" rel="noopener noreferrer"{% endif %} class="text-reset text-decoration-none">{{ row.first_name or row.rider_name }}</a>{% else %}{{ row.first_name or row.rider_name }}{% endif %}</td>
+                <td class="{% if not row.editable %}text-muted{% endif %}">{% if row.rider_url and row.last_name %}<a href="{{ row.rider_url }}" {% if row.rider_url_external %}target="_blank" rel="noopener noreferrer"{% endif %} class="text-reset text-decoration-none">{{ row.last_name }}</a>{% else %}{{ row.last_name or '-' }}{% endif %}</td>
+                <td>{{ row.nationality or '-' }}</td>
+                <td>{% if row.team_url %}<a href="{{ row.team_url }}" class="text-reset text-decoration-none">{{ row.team_name }}</a>{% else %}{{ row.team_name }}{% endif %}</td>
+                <td>{{ row.age if row.age is not none else '-' }}</td>
+                <td class="text-end">{{ row.time or '-' }}</td>
+                {% for stat_key in stat_fields %}
+                    {% set stat_value = row.stats.get(stat_key) %}
+                    {% set original_value = row.original_stats.get(stat_key, stat_value) %}
+                    <td class="stat-cell stat-col">
+                        {% if row.editable and stat_value is not none %}
+                        <div class="stat-input-row">
+                            <span class="delta-display" data-rider-id="{{ row.source_rider_id }}" data-stat-name="{{ stat_key }}" hidden></span>
+                            <input type="number" class="form-control stat-input"
+                                data-rider-id="{{ row.source_rider_id }}" data-source-rider-id="{{ row.source_rider_id }}" data-stat-name="{{ stat_key }}"
+                                data-original-value="{{ original_value }}" data-original="{{ original_value }}"
+                                data-saved-value="{{ stat_value }}" data-saved="{{ stat_value }}" value="{{ stat_value }}"
+                                min="50" max="85" step="1" {% if not can_update_stats %}disabled{% endif %}>
+                        </div>
+                        {% else %}-{% endif %}
+                    </td>
+                {% endfor %}
+                    <td class="stat-cell potential-cell">
+                        {% if row.editable and row.potential is not none %}
+                        <div class="stat-input-row">
+                            <span class="delta-display" data-rider-id="{{ row.source_rider_id }}" data-stat-name="potential" hidden></span>
+                            <input type="number" class="form-control stat-input"
+                                data-rider-id="{{ row.source_rider_id }}" data-source-rider-id="{{ row.source_rider_id }}" data-stat-name="potential"
+                                data-original-value="{{ '%g'|format(row.original_potential) }}" data-original="{{ '%g'|format(row.original_potential) }}"
+                                data-saved-value="{{ '%g'|format(row.potential) }}" data-saved="{{ '%g'|format(row.potential) }}" value="{{ '%g'|format(row.potential) }}"
+                                min="2.5" max="6" step="0.5" {% if not can_update_stats or row.potential_locked_by_age %}disabled{% endif %}>
+                        </div>
+                        {% else %}-{% endif %}
+                    </td>
+            </tr>
+        {% endfor %}
+        </tbody>
+    </table>
+</div>
+<p id="results-filter-empty" class="text-muted mt-3 mb-0" hidden>No riders match the selected filters.</p>
+{% else %}
+<p class="text-muted mb-0">No results are available for this view.</p>
+{% endif %}

@@ -42,6 +42,7 @@ class CDBCyclist(NamespaceBase):
     birth_date = Column(Integer)
     size_cm = Column(Float)  # Height in cm
     weight_kg = Column(Float)  # Weight in kg
+    potential = Column(Float)  # PCM rider potential, from value_f_potential
     
     # Skills (main attributes)
     stat_mo = Column(Integer)  # Mountain/climbing skill
@@ -159,6 +160,7 @@ class StatChange(NamespaceBase):
     delta_value = Column(Integer, nullable=False)
     is_confilict_override = Column(Boolean, nullable=False, default=False)
     is_approved = Column(Boolean, nullable=False, default=False)
+    updated_at = Column(DateTime, nullable=True)
 
     __table_args__ = (
         UniqueConstraint(
@@ -212,6 +214,7 @@ class StatChangeSnapshot(NamespaceBase):
     stat_rec = Column(Integer, nullable=False)
     stat_cob = Column(Integer, nullable=False)
     stat_att = Column(Integer, nullable=False)
+    potential_x2 = Column(Integer, nullable=False, default=0)
     discord_thread_id = Column(String(64), nullable=True)
     discord_thread_url = Column(String(500), nullable=True)
     discord_notified_at = Column(DateTime, nullable=True)

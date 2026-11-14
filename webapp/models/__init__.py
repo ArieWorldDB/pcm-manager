@@ -21,7 +21,7 @@ from webapp.models.main.firstcycling import (
     FirstCyclingRider,
 )
 from webapp.models.main.race_result_map import RaceResultMap
-from webapp.models.main.pcs import PcsRaceResult
+from webapp.models.main.pcs import PcsRaceCalendar, PcsRaceResult, PcsRaceResultPage
 
 
 # Association tables and relationship configuration are handled in CLI after db.create_all()
@@ -53,4 +53,6 @@ __all__ = [
     'FirstCyclingRider',
     'RaceResultMap',
     'PcsRaceResult',
+    'PcsRaceCalendar',
+    'PcsRaceResultPage',
 ]

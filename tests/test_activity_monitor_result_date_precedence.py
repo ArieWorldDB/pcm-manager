@@ -10,6 +10,7 @@ from webapp.extensions import db
 from webapp.models import Namespace, Role, User
 from webapp.models.ns.activity_monitor import ActivityMonitorBase
 from webapp.models.ns.schema import NamespaceBase
+from webapp.integrations.pcs.activity_profile import to_activity_monitor_evidence
 
 
 def test_rider_detail_uses_pcs_by_date_and_keeps_fc_on_other_dates(app, client):

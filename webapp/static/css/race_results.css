@@ -1,0 +1,86 @@
+.results-table-wrapper { overflow-x: auto; }
+.results-table { width: 100%; min-width: 1600px; table-layout: fixed; }
+.results-table thead th {
+    position: sticky;
+    top: 0;
+    z-index: 5;
+    white-space: nowrap;
+    text-align: center;
+    font-weight: 700;
+    background: #f8f9fa;
+}
+.results-table thead th + th { border-left: 1px solid #d6dde5; }
+.race-table-sticky-header {
+    position: fixed;
+    top: 0;
+    z-index: 1050;
+    overflow: hidden;
+    pointer-events: none;
+    background: #f8f9fa;
+    display: block;
+}
+.race-table-sticky-header th { pointer-events: auto; }
+.stats-editor-page .results-table thead th.sortable-col {
+    cursor: pointer; user-select: none; border: 0; border-bottom: 1px solid #dee2e6; border-left: 1px solid #d6dde5;
+    border-radius: 0; background: #f8f9fa; font: inherit; font-weight: 700; gap: normal;
+}
+.stats-editor-page .results-table thead th.sortable-col::after { content: none !important; }
+.results-table tbody td { vertical-align: middle; }
+.results-table.position-sorted tbody tr.same-time-group-end > td { border-bottom: 2px solid #6c757d; }
+body.dark-mode .results-table.position-sorted tbody tr.same-time-group-end > td { border-bottom-color: #9ca3af; }
+.results-table thead th:first-child,
+.results-table tbody td:first-child { width: 50px; }
+.results-table thead th:nth-child(3),
+.results-table thead th:nth-child(4),
+.results-table tbody td:nth-child(3),
+.results-table tbody td:nth-child(4) { width: 110px; }
+.results-table thead th:nth-child(5),
+.results-table tbody td:nth-child(5) { width: 105px; }
+.results-table thead th:nth-child(6),
+.results-table tbody td:nth-child(6) { width: 155px; }
+.results-table thead th:nth-child(7),
+.results-table tbody td:nth-child(7) { width: 52px; }
+.results-table thead th:nth-child(8),
+.results-table tbody td:nth-child(8) { width: 70px; padding-right: .75rem; white-space: nowrap; }
+.results-table thead th:nth-child(2),
+.results-table tbody td:nth-child(2) { width: 34px; padding-left: .2rem; padding-right: .2rem; }
+.results-table .stat-col { width: 62px; max-width: 62px; }
+.results-table .potential-cell { width: 68px; max-width: 68px; }
+.results-table tbody td:nth-child(3),
+.results-table tbody td:nth-child(4),
+.results-table tbody td:nth-child(5),
+.results-table tbody td:nth-child(6) { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.results-table .nationality-flag { text-align: center; line-height: 1; }
+.results-table .nationality-flag img { display: inline-block; width: 24px; height: 24px; object-fit: cover; border-radius: 50%; vertical-align: middle; }
+.stat-input-row {
+    display: flex; align-items: center; border: 1px solid #dee2e6;
+    border-radius: 0 0 .25rem .25rem; background: #fff; position: relative;
+}
+.stats-editor-page .stat-input-row .stat-step-controls {
+    opacity: 0 !important;
+    visibility: hidden !important;
+    transition: opacity 120ms ease-in-out, visibility 120ms ease-in-out;
+}
+.stats-editor-page .stat-input-row:hover .stat-step-controls {
+    opacity: 1 !important;
+    visibility: visible !important;
+}
+.stat-input-row.has-stat-delta { border-color: #f59f00; box-shadow: inset 0 0 0 2px #f59f00; }
+.stat-col { width: 72px; max-width: 72px; }
+.stat-input {
+    flex: 1; min-width: 32px; text-align: center; font-size: .85rem;
+    padding: .1rem .05rem; border: 0; border-radius: 0; background: transparent;
+}
+.stat-input:focus { outline: none; background: var(--brand-primary-soft); box-shadow: none; }
+.potential-cell .stat-input:disabled { opacity: 1; background: #e5e7eb !important; color: #6b7280 !important; cursor: not-allowed; }
+.stat-input.range-low { background: #52565a !important; color: #fff !important; }
+.stat-input.range-decent { background: #3886fe !important; color: #fff !important; }
+.stat-input.range-good { background: #28fc8b !important; color: #000 !important; }
+.stat-input.range-very-good { background: #fde13b !important; color: #000 !important; }
+.stat-input.range-excellent { background: #fdb927 !important; color: #000 !important; }
+.stat-input.range-elite { background: #fd2756 !important; color: #fff !important; }
+body.dark-mode .stats-editor-page .results-table thead th.sortable-col { background: #1f2937; border-bottom-color: #4b5563; }
+body.dark-mode .results-table thead th { border-color: #4b5563; background: #1f2937; }
+body.dark-mode .race-table-sticky-header { background: #1f2937; }
+body.dark-mode .stat-input-row { background: #111827; border-color: #4b5563; }
+body.dark-mode .stat-input-row.has-stat-delta { border-color: #fbbf24; box-shadow: inset 0 0 0 2px #fbbf24; }

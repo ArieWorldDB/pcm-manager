@@ -8,6 +8,7 @@ standard API client route. No request is made just by importing this module.
 from __future__ import annotations
 
 import hashlib
+import logging
 import os
 import random
 import re
@@ -29,6 +30,7 @@ from webapp.integrations.pcs.activity_profile import (
     parse_pcs_html,
     to_activity_monitor_evidence,
 )
+from webapp.integrations.pcs import parse_pcs_race_results_html
 from webapp.models.ns.activity_monitor import (
     ActivityMonitorProfileLink,
     ActivityMonitorRider,
@@ -40,6 +42,7 @@ from webapp.models.ns.activity_monitor import (
 _request_throttle_lock = threading.Lock()
 _last_request_started = 0.0
 _request_delay_override = ContextVar('activity_monitor_request_delay_override', default=None)
+logger = logging.getLogger(__name__)
 
 
 def set_activity_monitor_request_delay(seconds):
@@ -200,6 +203,70 @@ def _fetch_pcs_html(url, timeout_seconds=20, max_bytes=8_000_000):
         timeout_seconds=timeout_seconds,
         max_bytes=max_bytes,
     )
+
+
+def _enrich_pcs_stage_result_dates(parsed):
+    """Replace PCS profile race dates with dates from linked stage pages."""
+    stage_dates = {}
+    for result in parsed.get("rows", []):
+        if result.get("row_type") != "stage_result" or not result.get("stage_path"):
+            continue
+        stage_path = result["stage_path"]
+        if stage_path in stage_dates:
+            continue
+        stage_url = f"https://www.procyclingstats.com{stage_path}"
+        try:
+            stage_status, stage_body = _fetch_pcs_html(stage_url)
+            if stage_status != 200:
+                stage_dates[stage_path] = None
+                continue
+            stage_page = parse_pcs_race_results_html(
+                stage_body.decode("utf-8", errors="replace"), source_url=stage_url,
+            )
+            raw_stage_date = stage_page.stage_date
+            if raw_stage_date:
+                try:
+                    stage_dates[stage_path] = date.fromisoformat(raw_stage_date[:10])
+                except ValueError:
+                    parsed_text_date = None
+                    for date_format in ('%d %B %Y', '%d %b %Y', '%d.%m.%Y', '%d.%m.%y'):
+                        try:
+                            parsed_text_date = datetime.strptime(raw_stage_date, date_format).date()
+                            break
+                        except ValueError:
+                            continue
+                    stage_dates[stage_path] = parsed_text_date
+            else:
+                stage_dates[stage_path] = None
+        except Exception:
+            logger.info("PCS stage date lookup failed for %s", stage_path, exc_info=True)
+            stage_dates[stage_path] = None
+
+    latest_stage_dates = {}
+    for result in parsed.get("rows", []):
+        if result.get("row_type") != "stage_result" or not result.get("stage_path"):
+            continue
+        stage_date = stage_dates.get(result["stage_path"])
+        if not stage_date:
+            continue
+        result["date"] = stage_date.isoformat()
+        race_key = re.sub(
+            r"-stage-\d+$", "", urlsplit(result["stage_path"]).path, flags=re.I,
+        ).casefold()
+        if race_key:
+            latest_stage_dates[race_key] = max(
+                stage_date, latest_stage_dates.get(race_key, stage_date),
+            )
+
+    for result in parsed.get("rows", []):
+        if result.get("row_type") != "classification":
+            continue
+        race_key = re.sub(
+            r"-(?:gc|result)$", "", urlsplit(result.get("race_url") or "").path,
+            flags=re.I,
+        ).casefold()
+        if race_key in latest_stage_dates:
+            result["date"] = latest_stage_dates[race_key].isoformat()
 
 
 def _fetch_firstcycling_payload(first_cycling_id):
@@ -403,6 +470,8 @@ def _record_pcs_outcome(engine, task, rider, url, status, body, checked_at):
             year_override=task["reference_date"].year,
             as_of=task["reference_date"],
         )
+        _enrich_pcs_stage_result_dates(parsed)
+
         original_identity = parsed["identity"].get("identity_status")
         parsed_path = urlsplit(profile_url).path.rstrip("/").casefold()
         approval = next((

@@ -9,7 +9,7 @@ x-common-env: &common-env
   PROVISIONER_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@database:5432/postgres
   REDIS_URL: redis://cache:6379/0
   FIRST_CYCLING_BASE_URL: ${FIRST_CYCLING_BASE_URL:-https://firstcycling.com}
-  FIRST_CYCLING_API_PATH: ${FIRST_CYCLING_API_PATH}
+  FIRST_CYCLING_API_PATH: ${FIRST_CYCLING_API_PATH:-dora}
   FIRST_CYCLING_FETCH_ONLY_MISSING: True
   ACTIVITY_MONITOR_PCS_ENABLED: ${ACTIVITY_MONITOR_PCS_ENABLED:-false}
   ACTIVITY_MONITOR_FC_ENABLED: ${ACTIVITY_MONITOR_FC_ENABLED:-false}
@@ -58,6 +58,7 @@ services:
     build:
       context: .
       dockerfile: docker/webapp/Dockerfile
+    command: ["gunicorn", "--reload", "--bind", "0.0.0.0:6000", "--workers", "2", "--threads", "4", "--access-logfile", "-", "--error-logfile", "-", "wsgi:app"]
     container_name: web
     environment:
       <<: *common-env
