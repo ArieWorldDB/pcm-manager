@@ -87,11 +87,11 @@ def initialize_database(log=None):
 
         # Step 1: Create tables
         log('\n1. Creating database tables...')
-        # PCS calendar storage is intentionally installed from its reviewed
-        # manual SQL script, not created implicitly during application startup.
+        # PCS calendar and result page storage are installed together using
+        # reviewed manual SQL, not implicitly during application startup.
         main_tables = [
             table for table in db.metadatas['main'].tables.values()
-            if table.name != 'pcs_race_calendar'
+            if table.name not in {'pcs_race_calendar', 'pcs_race_result_pages'}
         ]
         db.metadatas['main'].create_all(
             bind=db.engines['main'],

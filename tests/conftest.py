@@ -2,6 +2,7 @@
 import os
 
 import pytest
+from sqlalchemy import create_engine
 from sqlalchemy.engine import make_url
 
 
@@ -23,6 +24,16 @@ def app(tmp_path_factory):
 
     from webapp import create_app
     from webapp.config import Config, config
+    from webapp.models.main.pcs import PcsRaceCalendar, PcsRaceResultPage
+
+    # These two shared tables are manually installed in deployed databases.
+    # Build the equivalent model schema only on this disposable test server.
+    test_engine = create_engine(database_url)
+    try:
+        PcsRaceCalendar.__table__.create(test_engine, checkfirst=True)
+        PcsRaceResultPage.__table__.create(test_engine, checkfirst=True)
+    finally:
+        test_engine.dispose()
 
     class TestConfig(Config):
         TESTING = True

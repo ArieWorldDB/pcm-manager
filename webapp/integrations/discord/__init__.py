@@ -14,8 +14,7 @@ from flask import current_app, has_app_context, has_request_context, url_for
 from sqlalchemy import create_engine, text
 
 from webapp.extensions import db
-from webapp.models import DiscordSettings, DiscordWorkflowThread, RaceResultMap
-from webapp.models.main.firstcycling import FirstCyclingRace, FirstCyclingRaceResult, FirstCyclingRaceStage
+from webapp.models import DiscordSettings, DiscordWorkflowThread
 
 logger = logging.getLogger('discord')
 
@@ -273,65 +272,22 @@ def get_discord_settings_for_namespace_workflow(namespace, workflow):
     ).order_by(DiscordSettings.id.asc()).all()
 
 
-def _firstcycling_race_result_map_ids(first_cycling_race_id=None, first_cycling_stage_id=None):
-    if first_cycling_race_id is None:
-        return []
-
-    query = RaceResultMap.query.filter_by(
-        provider='firstcycling',
-        external_race_id=str(first_cycling_race_id),
-    )
-    # Overall submissions review the entire race, including every stage.
-    if first_cycling_stage_id is not None:
-        query = query.filter(RaceResultMap.external_stage_id == str(first_cycling_stage_id))
-
-    return [row.race_result_id for row in query.all()]
-
-
-def _discord_snapshot_scope_where_clause(race_result_ids=None, stat_list_id=None):
-    if stat_list_id is not None:
-        return (
-            """
-            race_result_id IS NULL
-            AND stat_list_id = :list_id
-            """,
-            {'list_id': stat_list_id},
-        )
-
-    normalized_race_result_ids = [
-        race_result_id
-        for race_result_id in (race_result_ids or [])
-        if race_result_id is not None
-    ]
-    if not normalized_race_result_ids:
+def _discord_snapshot_scope_where_clause(stat_list_id):
+    if stat_list_id is None:
         return None, {}
 
     return (
         """
-        race_result_id = ANY(:race_result_ids)
-        AND stat_list_id IS NULL
+        race_result_id IS NULL
+        AND stat_list_id = :list_id
         """,
-        {'race_result_ids': normalized_race_result_ids},
+        {'list_id': stat_list_id},
     )
 
 
-def _load_namespace_discord_scope_state(
-    namespace,
-    first_cycling_race_id=None,
-    first_cycling_stage_id=None,
-    stat_list_id=None,
-):
-    if namespace is None:
+def _load_namespace_discord_scope_state(namespace, stat_list_id):
+    if namespace is None or stat_list_id is None:
         return None
-
-    race_result_ids = []
-    if stat_list_id is None:
-        race_result_ids = _firstcycling_race_result_map_ids(
-            first_cycling_race_id=first_cycling_race_id,
-            first_cycling_stage_id=first_cycling_stage_id,
-        )
-        if not race_result_ids:
-            return None
 
     connection_string = namespace.build_connection_string()
     engine = create_engine(connection_string)
@@ -358,10 +314,7 @@ def _load_namespace_discord_scope_state(
                 if column_name in columns:
                     selected_columns.append(column_name)
 
-            where_clause, params = _discord_snapshot_scope_where_clause(
-                race_result_ids=race_result_ids,
-                stat_list_id=stat_list_id,
-            )
+            where_clause, params = _discord_snapshot_scope_where_clause(stat_list_id)
             if not where_clause:
                 return None
             row = conn.execute(
@@ -388,93 +341,12 @@ def _load_namespace_discord_scope_state(
     return row_dict
 
 
-def _update_namespace_discord_scope_thread(
-    namespace,
-    thread_id,
-    thread_url=None,
-    first_cycling_race_id=None,
-    first_cycling_stage_id=None,
-    stat_list_id=None,
-):
-    if namespace is None or not thread_id:
-        return
-
-    race_result_ids = []
-    if stat_list_id is None:
-        race_result_ids = _firstcycling_race_result_map_ids(
-            first_cycling_race_id=first_cycling_race_id,
-            first_cycling_stage_id=first_cycling_stage_id,
-        )
-        if not race_result_ids:
-            return
-
-    connection_string = namespace.build_connection_string()
-    engine = create_engine(connection_string)
-    try:
-        with engine.begin() as conn:
-            columns = {
-                column_name
-                for column_name in conn.execute(
-                    text(
-                        """
-                        SELECT column_name
-                        FROM information_schema.columns
-                        WHERE table_schema = current_schema()
-                          AND table_name = 'stat_change_snapshot'
-                        """
-                    )
-                ).scalars()
-            }
-            if 'race_result_id' not in columns or 'stat_list_id' not in columns:
-                return
-
-            update_fields = []
-            where_clause, params = _discord_snapshot_scope_where_clause(
-                race_result_ids=race_result_ids,
-                stat_list_id=stat_list_id,
-            )
-            if not where_clause:
-                return
-            if 'discord_thread_id' in columns:
-                update_fields.append('discord_thread_id = :thread_id')
-                params['thread_id'] = str(thread_id)
-            if 'discord_thread_url' in columns:
-                update_fields.append('discord_thread_url = :thread_url')
-                params['thread_url'] = thread_url
-            if 'discord_notified_at' in columns:
-                update_fields.append('discord_notified_at = CURRENT_TIMESTAMP')
-
-            if not update_fields:
-                return
-
-            conn.execute(
-                text(
-                    f"""
-                    UPDATE stat_change_snapshot
-                    SET {', '.join(update_fields)}
-                    WHERE {where_clause}
-                    """
-                ),
-                params,
-            )
-    finally:
-        engine.dispose()
-
-
 def _discord_thread_url(thread_payload):
     guild_id = thread_payload.get('guild_id') if isinstance(thread_payload, dict) else None
     thread_id = thread_payload.get('id') if isinstance(thread_payload, dict) else None
     if not guild_id or not thread_id:
         return None
     return f'https://discord.com/channels/{guild_id}/{thread_id}'
-
-
-def _format_discord_date(value):
-    if value is None:
-        return '-'
-    if hasattr(value, 'isoformat'):
-        return value.isoformat()
-    return str(value)
 
 
 def _format_discord_username(username):
@@ -511,88 +383,16 @@ def _stat_image_value_class(value):
     return 'elite'
 
 
-def _coerce_int(value):
-    if value is None:
-        return None
-    try:
-        return int(value)
-    except (TypeError, ValueError):
-        return None
-
-
-def _finish_position_label(position):
-    position = _coerce_int(position)
-    if position is None:
-        return None
-    labels = {
-        999: 'DNF',
-        998: 'DNS',
-        997: 'OTL',
-        996: 'DSQ',
-    }
-    return labels.get(position, str(position))
-
-
-def _pick_race_result_rows(races):
-    result_rows = []
-    for race in races:
-        race_rows = FirstCyclingRaceResult.query.filter_by(
-            race_id=race.id,
-            result_scope='race',
-            stage_id=None,
-        ).all()
-        if race_rows:
-            result_rows.extend(race_rows)
-            continue
-
-        final_stage = FirstCyclingRaceStage.query.filter_by(race_id=race.id).order_by(
-            FirstCyclingRaceStage.stage_number.desc().nullslast(),
-            FirstCyclingRaceStage.id.desc(),
-        ).first()
-        if final_stage is None:
-            continue
-
-        result_rows.extend(
-            FirstCyclingRaceResult.query.filter_by(
-                race_id=race.id,
-                stage_id=final_stage.id,
-            ).all()
-        )
-
-    return result_rows
-
-
-def _load_stat_approval_image_rows(
-    namespace,
-    first_cycling_race_id=None,
-    first_cycling_stage_id=None,
-    stat_list_id=None,
-):
-    if namespace is None:
+def _load_stat_approval_image_rows(namespace, stat_list_id):
+    if namespace is None or stat_list_id is None:
         return []
 
-    race_result_ids = []
-    if stat_list_id is None:
-        race_result_ids = _firstcycling_race_result_map_ids(
-            first_cycling_race_id=first_cycling_race_id,
-            first_cycling_stage_id=first_cycling_stage_id,
-        )
-        if not race_result_ids:
-            return []
-
-    where_clause, params = _discord_snapshot_scope_where_clause(
-        race_result_ids=race_result_ids,
-        stat_list_id=stat_list_id,
-    )
-    if not where_clause:
-        return []
-
+    where_clause, params = _discord_snapshot_scope_where_clause(stat_list_id)
     snapshot_select = ', '.join(
         f's.{column_name} AS {column_name}'
         for column_name in STAT_APPROVAL_IMAGE_COLUMNS.values()
     )
-    connection_string = namespace.build_connection_string()
-    engine = create_engine(connection_string)
+    engine = create_engine(namespace.build_connection_string())
     try:
         with engine.connect() as conn:
             changed_rows = conn.execute(
@@ -623,11 +423,10 @@ def _load_stat_approval_image_rows(
                 ),
                 params,
             ).mappings().all()
-
             stat_change_rows = conn.execute(
                 text(
                     f"""
-                    SELECT race_result_id, cdb_cyclist_id, stat_name, original_value, final_value, delta_value
+                    SELECT cdb_cyclist_id, stat_name, original_value, final_value, delta_value
                     FROM stat_changes
                     WHERE {where_clause}
                     ORDER BY id ASC
@@ -660,80 +459,18 @@ def _load_stat_approval_image_rows(
             continue
         seen_riders.add(rider_id)
         changes = changes_by_rider.get(rider_id) or {}
-        stats = {}
-        for stat_name, column_name in STAT_APPROVAL_IMAGE_COLUMNS.items():
-            stats[stat_name] = row.get(column_name)
+        stats = {stat_name: row.get(column_name) for stat_name, column_name in STAT_APPROVAL_IMAGE_COLUMNS.items()}
         for stat_name, change in changes.items():
             if change.get('final_value') is not None:
-                stats[stat_name] = change.get('final_value')
-        rider_name = row.get('rider_name') or f'Rider #{rider_id}'
+                stats[stat_name] = change['final_value']
         rows.append({
             'cdb_cyclist_id': rider_id,
-            'rider_name': rider_name,
+            'rider_name': row.get('rider_name') or f'Rider #{rider_id}',
             'team_name': row.get('team_name') or '-',
             'stats': stats,
             'changes': changes,
         })
-
-    if rows and stat_list_id is None and first_cycling_race_id is not None:
-        cdb_to_fc = {}
-        connection_string = namespace.build_connection_string()
-        engine = create_engine(connection_string)
-        try:
-            with engine.connect() as conn:
-                link_rows = conn.execute(
-                    text(
-                        """
-                        SELECT id, first_cycling_id
-                        FROM cdb_cyclist
-                        WHERE id = ANY(:cdb_cyclist_ids)
-                        """
-                    ),
-                    {'cdb_cyclist_ids': [row['cdb_cyclist_id'] for row in rows]},
-                ).mappings().all()
-            cdb_to_fc = {
-                link_row.get('id'): _coerce_int(link_row.get('first_cycling_id'))
-                for link_row in link_rows
-            }
-        finally:
-            engine.dispose()
-
-        changed_fc_ids = {
-            fc_id
-            for fc_id in cdb_to_fc.values()
-            if fc_id is not None
-        }
-        races = FirstCyclingRace.query.filter_by(race_id=first_cycling_race_id).order_by(
-            FirstCyclingRace.season_year.desc(),
-            FirstCyclingRace.id.desc(),
-        ).all()
-        result_rows = _pick_race_result_rows(races)
-        result_by_rider = {}
-        for result in result_rows:
-            rider_id = _coerce_int(result.rider_id)
-            if rider_id in changed_fc_ids and rider_id not in result_by_rider:
-                result_by_rider[rider_id] = result
-
-        for row in rows:
-            result = result_by_rider.get(cdb_to_fc.get(row['cdb_cyclist_id']))
-            if result is None:
-                row['position'] = None
-                row['position_label'] = None
-                row['time'] = None
-                continue
-            position = result.overall_position if result.overall_position is not None else result.stage_position
-            time_value = result.overall_time if result.overall_time else result.stage_time
-            row['position'] = position
-            row['position_label'] = _finish_position_label(position)
-            row['time'] = time_value
-        rows.sort(key=lambda row: (
-            row.get('position') is None,
-            row.get('position') if row.get('position') is not None else 999999,
-            row['rider_name'],
-        ))
-
     return rows
-
 
 def _draw_fit_text(draw, box, text_value, font, fill, min_size=9, anchor='mm'):
     text_value = str(text_value or '')
@@ -781,7 +518,7 @@ def _load_stat_image_font(font_name, size):
     return ImageFont.load_default()
 
 
-def _render_stat_approval_image(rows, scope_title, include_race_columns=False):
+def _render_stat_approval_image(rows, scope_title):
     if not rows:
         return None
 
@@ -799,18 +536,10 @@ def _render_stat_approval_image(rows, scope_title, include_race_columns=False):
 
     stat_width = 72 * render_scale
     columns = []
-    if include_race_columns:
-        columns.extend([
-            ('Pos.', 60 * render_scale),
-            ('Rider', 190 * render_scale),
-            ('Team', 180 * render_scale),
-            ('Time', 82 * render_scale),
-        ])
-    else:
-        columns.extend([
-            ('Rider', 220 * render_scale),
-            ('Team', 190 * render_scale),
-        ])
+    columns.extend([
+        ('Rider', 220 * render_scale),
+        ('Team', 190 * render_scale),
+    ])
     columns.extend([(stat_name.upper(), stat_width) for stat_name in STAT_APPROVAL_IMAGE_DISPLAY_FIELDS])
 
     header_height = 36 * render_scale
@@ -867,20 +596,11 @@ def _render_stat_approval_image(rows, scope_title, include_race_columns=False):
         draw.rectangle((margin, y, width - margin, y + row_height), fill=row_fill)
         cell_index = 0
 
-        if include_race_columns:
-            position_text = row.get('position_label') or '-'
-            for text_value in (position_text, row.get('rider_name'), row.get('team_name'), row.get('time') or '-'):
-                _, x1, x2 = column_edges[cell_index]
-                draw.rectangle((x1, y, x2, y + row_height), outline=palette['border'])
-                anchor = 'lm' if cell_index in (1, 2) else 'mm'
-                _draw_fit_text(draw, (x1, y, x2, y + row_height), text_value, font_regular, palette['text'], anchor=anchor)
-                cell_index += 1
-        else:
-            for text_value in (row.get('rider_name'), row.get('team_name')):
-                _, x1, x2 = column_edges[cell_index]
-                draw.rectangle((x1, y, x2, y + row_height), outline=palette['border'])
-                _draw_fit_text(draw, (x1, y, x2, y + row_height), text_value, font_regular, palette['text'], anchor='lm')
-                cell_index += 1
+        for text_value in (row.get('rider_name'), row.get('team_name')):
+            _, x1, x2 = column_edges[cell_index]
+            draw.rectangle((x1, y, x2, y + row_height), outline=palette['border'])
+            _draw_fit_text(draw, (x1, y, x2, y + row_height), text_value, font_regular, palette['text'], anchor='lm')
+            cell_index += 1
 
         for stat_name in STAT_APPROVAL_IMAGE_DISPLAY_FIELDS:
             _, x1, x2 = column_edges[cell_index]
@@ -920,51 +640,19 @@ def _render_stat_approval_image(rows, scope_title, include_race_columns=False):
     return output.name
 
 
-def _build_stat_approval_image(
-    namespace,
-    scope_title,
-    first_cycling_race_id=None,
-    first_cycling_stage_id=None,
-    stat_list_id=None,
-):
-    rows = _load_stat_approval_image_rows(
-        namespace,
-        first_cycling_race_id=first_cycling_race_id,
-        first_cycling_stage_id=first_cycling_stage_id,
-        stat_list_id=stat_list_id,
-    )
-    return _render_stat_approval_image(
-        rows,
-        scope_title,
-        include_race_columns=stat_list_id is None,
-    )
+def _build_stat_approval_image(namespace, scope_title, stat_list_id):
+    rows = _load_stat_approval_image_rows(namespace, stat_list_id)
+    return _render_stat_approval_image(rows, scope_title)
 
 
-def _discord_thread_scope_filter(query, first_cycling_race_id=None, first_cycling_stage_id=None, stat_list_id=None):
-    if first_cycling_race_id is None:
-        query = query.filter(DiscordWorkflowThread.first_cycling_race_id.is_(None))
-    else:
-        query = query.filter(DiscordWorkflowThread.first_cycling_race_id == first_cycling_race_id)
-
-    if first_cycling_stage_id is None:
-        query = query.filter(DiscordWorkflowThread.first_cycling_stage_id.is_(None))
-    else:
-        query = query.filter(DiscordWorkflowThread.first_cycling_stage_id == first_cycling_stage_id)
-
-    if stat_list_id is None:
-        query = query.filter(DiscordWorkflowThread.stat_list_id.is_(None))
-    else:
-        query = query.filter(DiscordWorkflowThread.stat_list_id == stat_list_id)
-
-    return query
+def _discord_thread_scope_filter(query, stat_list_id):
+    return query.filter(DiscordWorkflowThread.stat_list_id == stat_list_id)
 
 
 def _load_discord_workflow_thread(
     namespace,
     settings,
-    first_cycling_race_id=None,
-    first_cycling_stage_id=None,
-    stat_list_id=None,
+    stat_list_id,
 ):
     query = DiscordWorkflowThread.query.filter_by(
         namespace_id=namespace.id,
@@ -973,8 +661,6 @@ def _load_discord_workflow_thread(
     )
     return _discord_thread_scope_filter(
         query,
-        first_cycling_race_id=first_cycling_race_id,
-        first_cycling_stage_id=first_cycling_stage_id,
         stat_list_id=stat_list_id,
     ).first()
 
@@ -984,15 +670,13 @@ def _save_discord_workflow_thread(
     settings,
     thread_id,
     thread_url=None,
-    first_cycling_race_id=None,
-    first_cycling_stage_id=None,
     stat_list_id=None,
 ):
+    if stat_list_id is None:
+        return None
     thread = _load_discord_workflow_thread(
         namespace,
         settings,
-        first_cycling_race_id=first_cycling_race_id,
-        first_cycling_stage_id=first_cycling_stage_id,
         stat_list_id=stat_list_id,
     )
     if thread is None:
@@ -1000,8 +684,6 @@ def _save_discord_workflow_thread(
             namespace_id=namespace.id,
             discord_settings_id=settings.id,
             workflow=settings.workflow,
-            first_cycling_race_id=first_cycling_race_id,
-            first_cycling_stage_id=first_cycling_stage_id,
             stat_list_id=stat_list_id,
         )
         db.session.add(thread)
@@ -1018,12 +700,10 @@ def notify_discord_stat_scope_saved(
     review_url,
     saved_count,
     saved_by=None,
-    scope_label='Stat edits',
-    race_date=None,
-    first_cycling_race_id=None,
-    first_cycling_stage_id=None,
     stat_list_id=None,
 ):
+    if stat_list_id is None:
+        return False
     workflow = DiscordSettings.WORKFLOW_STATS_EDITOR_APPROVALS
     settings_rows = get_discord_settings_for_namespace_workflow(namespace, workflow)
     if not settings_rows:
@@ -1033,12 +713,7 @@ def notify_discord_stat_scope_saved(
     if not client.bot_token:
         return False
 
-    scope_state = _load_namespace_discord_scope_state(
-        namespace,
-        first_cycling_race_id=first_cycling_race_id,
-        first_cycling_stage_id=first_cycling_stage_id,
-        stat_list_id=stat_list_id,
-    )
+    scope_state = _load_namespace_discord_scope_state(namespace, stat_list_id)
     if not scope_state:
         return False
 
@@ -1048,9 +723,7 @@ def notify_discord_stat_scope_saved(
         approval_image_path = _build_stat_approval_image(
             namespace,
             scope_title,
-            first_cycling_race_id=first_cycling_race_id,
-            first_cycling_stage_id=first_cycling_stage_id,
-            stat_list_id=stat_list_id,
+            stat_list_id,
         )
     except Exception:
         logger.exception('Failed to generate Discord stat approval image for %s', scope_title)
@@ -1068,8 +741,6 @@ def notify_discord_stat_scope_saved(
             workflow_thread = _load_discord_workflow_thread(
                 namespace,
                 settings,
-                first_cycling_race_id=first_cycling_race_id,
-                first_cycling_stage_id=first_cycling_stage_id,
                 stat_list_id=stat_list_id,
             )
 
@@ -1095,10 +766,7 @@ def notify_discord_stat_scope_saved(
 
             namespace_label = str(namespace.slug or namespace.name or namespace.id)
             namespace_link = _discord_markdown_link(namespace_label, _namespace_dashboard_url(namespace))
-            scope_label = scope_title
-            if stat_list_id is None and race_date is not None:
-                scope_label = f'{_format_discord_date(race_date)} - {scope_title}'
-            scope_link = _discord_markdown_link(scope_label, review_url)
+            scope_link = _discord_markdown_link(scope_title, review_url)
             initial_message = (
                 f'{namespace_link}: {scope_link}\n'
                 f'{save_message}'
@@ -1123,8 +791,6 @@ def notify_discord_stat_scope_saved(
                 settings,
                 thread_id,
                 thread_url,
-                first_cycling_race_id=first_cycling_race_id,
-                first_cycling_stage_id=first_cycling_stage_id,
                 stat_list_id=stat_list_id,
             )
             sent_any = True
@@ -1147,7 +813,6 @@ def notify_discord_stat_list_saved(namespace, list_id, list_name, review_url, sa
         review_url,
         saved_count,
         saved_by=saved_by,
-        scope_label='Stat List',
         stat_list_id=list_id,
     )
 
@@ -1168,39 +833,10 @@ def load_namespace_stat_list_name(namespace, list_id):
         engine.dispose()
 
 
-def notify_discord_race_stat_saved(
-    namespace,
-    race_id,
-    race_name,
-    race_date,
-    stage_id,
-    review_url,
-    saved_count,
-    saved_by=None,
-):
-    if stage_id is not None:
-        return False
-
-    race_title = race_name or f'Race #{race_id}'
-    return notify_discord_stat_scope_saved(
-        namespace,
-        race_title,
-        review_url,
-        saved_count,
-        saved_by=saved_by,
-        scope_label='Race Result',
-        race_date=race_date,
-        first_cycling_race_id=race_id,
-        first_cycling_stage_id=None,
-    )
-
-
 def _post_discord_scope_message(
     namespace,
     content,
-    first_cycling_race_id=None,
-    first_cycling_stage_id=None,
-    stat_list_id=None,
+    stat_list_id,
     archive_thread=False,
 ):
     workflow = DiscordSettings.WORKFLOW_STATS_EDITOR_APPROVALS
@@ -1217,8 +853,6 @@ def _post_discord_scope_message(
             workflow_thread = _load_discord_workflow_thread(
                 namespace,
                 settings,
-                first_cycling_race_id=first_cycling_race_id,
-                first_cycling_stage_id=first_cycling_stage_id,
                 stat_list_id=stat_list_id,
             )
             if workflow_thread is None:
@@ -1245,19 +879,6 @@ def notify_discord_stat_list_approved(namespace, list_id, approved_by=None):
         namespace,
         f'✅ Approved by {_format_discord_username(approved_by)}',
         stat_list_id=list_id,
-        archive_thread=True,
-    )
-
-
-def notify_discord_race_stat_approved(namespace, race_id, stage_id, approved_by=None):
-    if stage_id is not None:
-        return False
-
-    return _post_discord_scope_message(
-        namespace,
-        f'✅ Approved by {_format_discord_username(approved_by)}',
-        first_cycling_race_id=race_id,
-        first_cycling_stage_id=None,
         archive_thread=True,
     )
 

@@ -320,6 +320,8 @@ body.dark-mode .activity-detail-summary-card { background: #2d3748; }
 {% set research_today = activity.get('research_today') %}
 {% set can_retire_rider = activity.get('can_retire_rider', false) %}
 {% set load_error = activity.get('load_error', false) %}
+{% set shared_identity_status = activity.get('shared_identity_status') %}
+{% set shared_pcs_enabled = activity.get('shared_pcs_enabled', false) %}
 {% set back_url = activity.get('back_url', back_url) %}
 {% include '_activity_monitor_rider_detail.html' %}
 {% else %}

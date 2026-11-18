@@ -167,3 +167,8 @@ def nationality_flag_code(value):
     return _COUNTRY_TO_CODE.get(_key(label))
 
 
+def supported_flag_codes():
+    """Return the ISO alpha-2 country codes recognized by this module."""
+    return frozenset(_COUNTRIES)
+
+

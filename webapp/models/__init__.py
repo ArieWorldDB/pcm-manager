@@ -13,15 +13,9 @@ from webapp.models.main.role import Role, Resource, Action, RolePermission
 from webapp.models.main.namespace import Namespace
 from webapp.models.main.user import User, UserSecurityToken
 from webapp.models.main.discord_settings import DiscordSettings, DiscordWorkflowThread, DISCORD_WORKFLOW_CHOICES
-from webapp.models.main.firstcycling import (
-    FirstCyclingRace,
-    FirstCyclingRaceStage,
-    FirstCyclingRaceResult,
-    FirstCyclingTeam,
-    FirstCyclingRider,
-)
+from webapp.models.main.firstcycling import FirstCyclingTeam, FirstCyclingRider
 from webapp.models.main.race_result_map import RaceResultMap
-from webapp.models.main.pcs import PcsRaceCalendar, PcsRaceResult, PcsRaceResultPage
+from webapp.models.main.pcs import PcsRaceCalendar, PcsRaceResultPage
 
 
 # Association tables and relationship configuration are handled in CLI after db.create_all()
@@ -46,13 +40,9 @@ __all__ = [
     'DISCORD_WORKFLOW_CHOICES',
     'AuditLog',
     'AuditAction',
-    'FirstCyclingRace',
-    'FirstCyclingRaceStage',
-    'FirstCyclingRaceResult',
     'FirstCyclingTeam',
     'FirstCyclingRider',
     'RaceResultMap',
-    'PcsRaceResult',
     'PcsRaceCalendar',
     'PcsRaceResultPage',
 ]

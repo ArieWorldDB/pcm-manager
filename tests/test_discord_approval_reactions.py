@@ -17,9 +17,8 @@ def test_reaction_api_encodes_checkbox(monkeypatch, method, http_method):
     request.assert_called_once_with(http_method, '/channels/channel/messages/starter/reactions/%E2%9C%85/@me')
 
 
-@pytest.mark.parametrize('scope', ['race', 'list'])
 @pytest.mark.parametrize('reaction_fails', [False, True])
-def test_approval_reacts_and_preserves_reply_and_archive(monkeypatch, scope, reaction_fails):
+def test_approval_reacts_and_preserves_reply_and_archive(monkeypatch, reaction_fails):
     app = Flask(__name__)
     namespace = SimpleNamespace(id=1)
     settings = SimpleNamespace(id=2, channel_id='parent')
@@ -32,12 +31,8 @@ def test_approval_reacts_and_preserves_reply_and_archive(monkeypatch, scope, rea
     lookup = Mock(return_value=SimpleNamespace(thread_id='starter'))
     monkeypatch.setattr(discord, '_load_discord_workflow_thread', lookup)
     with app.app_context():
-        if scope == 'race':
-            assert discord.notify_discord_race_stat_approved(namespace, 42, None, approved_by='approver')
-            assert lookup.call_args.kwargs['first_cycling_race_id'] == 42
-        else:
-            assert discord.notify_discord_stat_list_approved(namespace, 42, approved_by='approver')
-            assert lookup.call_args.kwargs['stat_list_id'] == 42
+        assert discord.notify_discord_stat_list_approved(namespace, 42, approved_by='approver')
+        assert lookup.call_args.kwargs['stat_list_id'] == 42
     client.send_message.assert_called_once_with('starter', '\u2705 Approved by approver')
     client.add_reaction.assert_called_once_with('parent', 'starter', '\u2705')
     client.archive_thread.assert_called_once_with('starter')

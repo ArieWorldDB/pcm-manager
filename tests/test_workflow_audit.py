@@ -1,14 +1,10 @@
 """Workflow audit entries persist actors and namespace-qualified resources."""
-import json
 from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
-from sqlalchemy import create_engine, text
-
 from webapp.extensions import db
-from webapp.models import AuditLog, FirstCyclingRace, Role, User
-from webapp.models.ns.schema import NamespaceBase
+from webapp.models import AuditLog, Role, User
 from webapp.web import routes
 
 
@@ -66,43 +62,3 @@ def test_release_audit_lifecycle(app, client, actor, monkeypatch):
     assert client.post(path, data={'status_target': 'approved'}).status_code == 403
     with app.app_context():
         assert AuditLog.query.filter_by(user_id=actor).count() == 6
-
-
-def test_race_save_audit_includes_resets_and_namespace(app, client, actor, monkeypatch):
-    schema = 'audit_' + uuid4().hex
-    with app.app_context():
-        db.session.execute(text(f'CREATE SCHEMA {schema}'))
-        db.session.commit()
-        engine = create_engine(db.engine.url, connect_args={'options': f'-csearch_path={schema}'})
-        NamespaceBase.metadata.create_all(engine)
-        race = FirstCyclingRace(race_id=987123456, season_year=2026, name='Audit race')
-        db.session.add(race)
-        db.session.commit()
-        race_pk = race.id
-    namespace = SimpleNamespace(id=201, build_connection_string=lambda: 'audit-namespace')
-    monkeypatch.setattr(routes, '_get_accessible_namespaces', lambda: [namespace])
-    monkeypatch.setattr(routes, '_get_selected_namespace', lambda _: namespace)
-    monkeypatch.setattr(routes, 'create_engine', lambda url: engine if url == 'audit-namespace' else pytest.fail('Wrong namespace'))
-    monkeypatch.setattr(routes, '_get_firstcycling_race_result_map', lambda *a: SimpleNamespace(race_result_id=1))
-    try:
-        with engine.begin() as conn:
-            conn.execute(text('INSERT INTO cdb_cyclist (id, first_cycling_id, stat_mo) VALUES (1, 123, 70)'))
-        path = '/stats-editor/races/987123456/save-stat-deltas'
-        for ns_id, value in ((201, 75), (202, 70)):
-            namespace.id = ns_id
-            assert client.post(path, data={'changes_json': json.dumps([{
-                'first_cycling_rider_id': 123, 'stat_name': 'mo', 'final_value': value,
-            }])}).status_code == 302
-        assert client.post(path, data={'changes_json': 'invalid'}).status_code == 302
-        with app.app_context():
-            logs = AuditLog.query.filter_by(user_id=actor, action='race_stats_saved').order_by(AuditLog.id).all()
-            assert len(logs) == 2
-            assert [row.resource_type for row in logs] == ['namespace:201:race', 'namespace:202:race']
-            assert [row.details['changes'][0]['final_value'] for row in logs] == [75, 70]
-            assert all(row.resource_id == 987123456 and row.details['changes'][0]['original_value'] == 70 for row in logs)
-    finally:
-        engine.dispose()
-        with app.app_context():
-            db.session.delete(db.session.get(FirstCyclingRace, race_pk))
-            db.session.execute(text(f'DROP SCHEMA {schema} CASCADE'))
-            db.session.commit()

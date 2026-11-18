@@ -2,8 +2,7 @@
 import logging
 import re
 import unicodedata
-from dataclasses import asdict, dataclass
-from datetime import datetime
+from dataclasses import dataclass
 from urllib.parse import urlparse, urljoin, unquote
 
 try:
@@ -14,8 +13,6 @@ except ImportError:  # pragma: no cover - exercised only when dependency is miss
 from sqlalchemy import create_engine, text
 
 from webapp.extensions import db
-from webapp.models.main.race_result_map import RaceResultMap
-from webapp.models.main.pcs import PcsRaceResult
 
 logger = logging.getLogger('pcs')
 
@@ -48,7 +45,6 @@ class PcsRaceResultParse:
     nation_name: str | None = None
     stages: list[dict] | None = None
     stage_number: int | None = None
-    profile: str | None = None
     distance_km: float | None = None
     start_location: str | None = None
     end_location: str | None = None
@@ -255,10 +251,10 @@ def _extract_race_metadata(soup):
 
 
 def _extract_stage_metadata(soup):
-    """Read stage identity and details shown in PCS page headings."""
+    """Read race/stage identity and details shown in PCS headings and info panel."""
     metadata = {}
     subtitle = soup.select_one('.titleCont .title-line2')
-    subtitle_text = _clean_text(subtitle.get_text(' ', strip=True)) if subtitle else ''
+    subtitle_text = (_clean_text(subtitle.get_text(' ', strip=True)) or '') if subtitle else ''
     stage_match = re.search(r'\bStage\s+(\d+)\b', subtitle_text, re.I)
     if stage_match:
         metadata['stage_number'] = int(stage_match.group(1))
@@ -276,12 +272,14 @@ def _extract_stage_metadata(soup):
             value = _clean_text(sibling.get_text(' ', strip=True))
             if value:
                 break
-        if label_text == 'profile' and value:
-            metadata['profile'] = value
-        elif label_text == 'parcours type' and value:
+        if label_text == 'parcours type' and value:
             metadata['parcours_type'] = value
         elif label_text == 'won how' and value:
             metadata['stage_type'] = value
+        elif label_text == 'distance' and value and 'distance_km' not in metadata:
+            distance_value = re.search(r'\d+(?:[.,]\d+)?', value)
+            if distance_value:
+                metadata['distance_km'] = float(distance_value.group().replace(',', '.'))
         elif label_text in {'departure', 'from', 'start'} and value:
             metadata['start_location'] = value
         elif label_text in {'arrival', 'to', 'finish'} and value:
@@ -297,14 +295,23 @@ def _extract_stage_metadata(soup):
 
 
 def format_pcs_stage_profile(stage_page):
-    stage_type = (stage_page.stage_type or '').strip()
-    type_label = {
-        'time trial': 'ITT',
-        'individual time trial': 'ITT',
-        'team time trial': 'TTT',
-    }.get(stage_type.casefold(), stage_type)
-    profile_parts = [part for part in (type_label, stage_page.parcours_type or stage_page.profile) if part]
-    return ' · '.join(dict.fromkeys(profile_parts)) or None
+    """Return the stored TT kind, falling back to raw metadata before schema setup."""
+    if hasattr(stage_page, 'time_trial_type'):
+        return stage_page.time_trial_type
+    return pcs_time_trial_type(stage_page.stage_type)
+
+
+def pcs_time_trial_type(value):
+    """Normalize PCS "Won How" metadata or a stage-name marker to ITT, TTT, or None."""
+    stage_marker = re.search(r'\(\s*(ITT|TTT)\s*\)', str(value or ''), re.IGNORECASE)
+    if stage_marker:
+        return stage_marker.group(1).upper()
+    normalized = re.sub(r'[^a-z]+', ' ', str(value or '').casefold()).strip()
+    if normalized in {'team time trial', 'ttt'}:
+        return 'TTT'
+    if normalized in {'time trial', 'individual time trial', 'itt'}:
+        return 'ITT'
+    return None
 
 
 def _round_time_to_whole_seconds(value):
@@ -597,12 +604,18 @@ def parse_pcs_race_results_html(html, source_url=None):
             nationality=nationality,
         ))
 
+    stage_metadata = _extract_stage_metadata(soup)
+    stages = [stage_links[number] for number in sorted(stage_links)]
     if not parsed_rows:
+        if not result_rows and {'rnk', 'ridername'}.issubset(headers):
+            logger.info('PCS result table has no rows at %s', source_url or 'HTML')
+            return PcsRaceResultParse(
+                race_name=race_name, rows=[], stages=([*stages, overall_link] if overall_link else stages) or None,
+                **race_metadata, **stage_metadata,
+            )
         raise PcsParseError('PCS returned a results table, but no rider rows could be read')
 
     logger.info('Parsed %s PCS result rows from %s', len(parsed_rows), source_url or 'HTML')
-    stage_metadata = _extract_stage_metadata(soup)
-    stages = [stage_links[number] for number in sorted(stage_links)]
     return PcsRaceResultParse(
         race_name=race_name, rows=parsed_rows,
         stages=([*stages, overall_link] if overall_link else stages) or None,
@@ -721,92 +734,7 @@ class PcsRiderMatcher:
         return PcsRiderMatch(cyclist_id=None, method='unmatched', score=None)
 
 
-class PcsClient:
-    """Persistence helper for parsed PCS race results."""
-
-    def __init__(self, namespace, db_session=None, fuzzy_threshold=0.84):
-        if namespace is None:
-            raise ValueError('namespace is required for PCS race result sync')
-        self.namespace = namespace
-        self.db_session = db_session or db.session
-        self.matcher = PcsRiderMatcher(namespace, fuzzy_threshold=fuzzy_threshold)
-
-    def sync_race_results_from_html(
-        self,
-        *,
-        html,
-        source_url=None,
-        commit=True,
-    ):
-        parsed = parse_pcs_race_results_html(html, source_url=source_url)
-        deleted_existing = (
-            self.db_session.query(PcsRaceResult)
-            .filter_by(namespace_id=self.namespace.id, race_name=parsed.race_name)
-            .delete(synchronize_session=False)
-        )
-
-        rows_to_insert = []
-        matched = 0
-        for parsed_row in parsed.rows:
-            match = self.matcher.match(parsed_row.rider_name, parsed_row.pcs_rider_path)
-            if match.cyclist_id is not None:
-                matched += 1
-
-            row_payload = asdict(parsed_row)
-            row_payload.pop('pcs_rider_path', None)
-            row_payload.pop('position_status', None)
-            pcs_result = PcsRaceResult(
-                namespace_id=self.namespace.id,
-                race_name=parsed.race_name,
-                matched_cdb_cyclist_id=match.cyclist_id,
-                match_method=match.method,
-                match_score=match.score,
-                last_synced_at=datetime.utcnow(),
-                **row_payload,
-            )
-            self.db_session.add(pcs_result)
-            self.db_session.flush()
-            race_result_map = self._upsert_race_result_map(pcs_result)
-            pcs_result.race_result_id = race_result_map.race_result_id
-            rows_to_insert.append(pcs_result)
-
-        if rows_to_insert:
-            self.db_session.add_all(rows_to_insert)
-        if commit:
-            self.db_session.commit()
-
-        return {
-            'race_name': parsed.race_name,
-            'parsed': len(parsed.rows),
-            'inserted': len(rows_to_insert),
-            'matched': matched,
-            'unmatched': len(parsed.rows) - matched,
-            'deleted_existing': deleted_existing,
-        }
-
-    def _upsert_race_result_map(self, pcs_result):
-        race_result_map = (
-            self.db_session.query(RaceResultMap)
-            .filter_by(
-                provider='pcs',
-                external_race_id=str(pcs_result.id),
-                external_stage_id=None,
-            )
-            .first()
-        )
-        if race_result_map is None:
-            race_result_map = RaceResultMap(
-                provider='pcs',
-                external_race_id=str(pcs_result.id),
-                external_stage_id=None,
-            )
-            self.db_session.add(race_result_map)
-        self.db_session.flush()
-        return race_result_map
-
-
 __all__ = [
-    'PcsClient',
     'PcsParseError',
     'PcsRaceResultParse',
     'PcsRaceResultRow',
@@ -814,4 +742,5 @@ __all__ = [
     'PcsRiderMatcher',
     'parse_pcs_race_results_html',
     'format_pcs_stage_profile',
+    'pcs_time_trial_type',
 ]

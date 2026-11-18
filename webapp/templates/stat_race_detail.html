@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from "_race_detail_macros.html" import race_page_header, race_details, race_results_heading, race_stage_selector %}
+{% from "_race_detail_macros.html" import race_page_header, race_details, race_results_heading %}
 
 {% block title %}{{ race_name }} - Stats Editor{% endblock %}
 {% block body_class %}stats-editor-page{% endblock %}
@@ -96,46 +96,20 @@ body.dark-mode .race-title-link {
 
 {% block content %}
 {% set race_status_items = [] %}
-{% if race_source == 'firstcycling' %}
-    {% if result_state.is_result_saved %}{% set race_status_items = race_status_items + [('⬇️', 'Race result downloaded')] %}
-    {% elif result_state.has_partial_stage_results %}{% set race_status_items = race_status_items + [('🔄', 'Stage results partially downloaded')] %}{% endif %}
-    {% if delta_change_count > 0 %}{% set race_status_items = race_status_items + [('✏️', 'Edits saved')] %}{% endif %}
-    {% if scope_delta_status.approved_changes > 0 and scope_delta_status.unapproved_changes == 0 %}{% set race_status_items = race_status_items + [('☑', 'Approved')] %}
-    {% elif scope_delta_status.unapproved_changes > 0 %}{% set race_status_items = race_status_items + [('⏳', 'Approval pending')] %}{% endif %}
-{% elif race_source == 'pcs' %}
     {% if pcs_result_is_cached %}{% set race_status_items = race_status_items + [('⬇️', 'Race result downloaded')] %}{% endif %}
     {% if delta_change_count > 0 %}{% set race_status_items = race_status_items + [('✏️', 'Edits saved')] %}{% endif %}
     {% if scope_delta_status.approved_changes > 0 and scope_delta_status.unapproved_changes == 0 %}{% set race_status_items = race_status_items + [('☑', 'Approved')] %}
     {% elif scope_delta_status.unapproved_changes > 0 %}{% set race_status_items = race_status_items + [('⏳', 'Approval pending')] %}{% endif %}
-{% endif %}
 {% call race_page_header(race_name, race_source_label, race_source_id_label, race_source_id, race_status_items) %}
-    {% if race_source == 'pcs' %}
-        <form method="post" action="{{ pcs_get_result_url }}" class="mb-0">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            {% if selected_stage_number is not none %}<input type="hidden" name="pcs_stage" value="{{ selected_stage_number }}">{% endif %}
-            <button type="submit" class="btn btn-outline-primary get-result-btn" {% if not can_download_stats %}disabled title="Get Result locked"{% endif %}>Get Result{% if not can_download_stats %} &#128274;{% endif %}</button>
-        </form>
-        <a href="{{ race_result_url }}" class="btn btn-outline-secondary" target="_blank" rel="noopener noreferrer">Open PCS result</a>
-    {% else %}
-    <div>
-        <form method="post" action="{{ get_result_url }}" class="d-inline-block get-result-form">
-            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-            {% if selected_stage %}<input type="hidden" name="stage_id" value="{{ selected_stage.id }}">{% endif %}
-            <button type="submit" class="btn btn-outline-primary get-result-btn get-result-submit" {% if not can_download_stats or result_state.is_future_race %}disabled{% if not can_download_stats %} title="Get Result locked"{% endif %}{% endif %}>Get Result{% if not can_download_stats %} &#128274;{% endif %}</button>
-        </form>
-        <a href="{{ race_result_url }}" class="btn btn-outline-secondary" target="_blank" rel="noopener noreferrer">Open FirstCycling result</a>
-        {% if result_state.is_future_race %}<div class="result-status-future mt-2 text-end">Available on race start date</div>{% endif %}
-    </div>
-    {% endif %}
+    <form method="post" action="{{ pcs_get_result_url }}" class="mb-0">
+        <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+        {% if selected_stage_number is not none %}<input type="hidden" name="pcs_stage" value="{{ selected_stage_number }}">{% endif %}
+        <button type="submit" class="btn btn-outline-primary get-result-btn" {% if not can_download_stats %}disabled title="Get Result locked"{% endif %}>Get Result{% if not can_download_stats %} &#128274;{% endif %}</button>
+    </form>
+    <a href="{{ race_result_url }}" class="btn btn-outline-secondary" target="_blank" rel="noopener noreferrer">Open PCS result</a>
     <a href="{{ url_for('web.stats_editor') }}" class="btn btn-outline-secondary">Back To Stats Editor</a>
 {% endcall %}
-{% if race_source == 'firstcycling' and selected_stage %}<p class="text-muted mb-2">Stage {{ selected_stage.stage_number or '?' }} - {{ (selected_stage.stage_start_location or '-') ~ ' to ' ~ (selected_stage.stage_end_location or '-') }}</p>{% endif %}
-
 {{ race_details(race_details_items) }}
-
-{% if race_source == 'firstcycling' and stage_rows %}
-{{ race_stage_selector('firstcycling', race, stage_rows, selected_stage, none, stage_status_map|default({}), result_state, overall_delta_status) }}
-{% endif %}
 
 <div class="panel-card card" id="stage-results">
     <div class="card-body">
@@ -145,22 +119,21 @@ body.dark-mode .race-title-link {
             {% if can_update_stats %}
             <form method="post" action="{{ save_url }}" id="save-form" class="mb-0">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                {% if race_source == 'firstcycling' and selected_stage %}<input type="hidden" name="stage_id" value="{{ selected_stage.id }}">{% elif race_source == 'pcs' and selected_stage_number is not none %}<input type="hidden" name="pcs_stage" value="{{ selected_stage_number }}">{% endif %}
+                {% if selected_stage_number is not none %}<input type="hidden" name="pcs_stage" value="{{ selected_stage_number }}">{% endif %}
                 <input type="hidden" name="changes_json" id="changes-json" value="">
                 <button type="submit" class="btn btn-primary" id="save-button" disabled>Save</button>
             </form>
-            {% if race_source == 'pcs' or not selected_stage %}
             <form method="post" action="{{ submit_url }}" class="mb-0">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
                 {% if race_source == 'pcs' and selected_stage_number is not none %}<input type="hidden" name="pcs_stage" value="{{ selected_stage_number }}">{% endif %}
                 <button type="submit" class="btn btn-success" {% if not selected_namespace or not scope_delta_status.unapproved_changes %}disabled{% endif %}>Submit for Approval</button>
             </form>
-            {% endif %}{% endif %}
+            {% endif %}
             {% if can_approve_stats %}
             <form method="post" action="{{ approve_url }}" class="mb-0">
                 <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
-                {% if race_source == 'firstcycling' and selected_stage %}<input type="hidden" name="stage_id" value="{{ selected_stage.id }}">{% elif race_source == 'pcs' and selected_stage_number is not none %}<input type="hidden" name="pcs_stage" value="{{ selected_stage_number }}">{% endif %}
-                <button type="submit" class="btn btn-success" {% if not selected_namespace or not scope_delta_status.unapproved_changes or not is_submitted_for_approval or stat_conflicts or (race_source == 'firstcycling' and result_state.is_stage_race and selected_stage) or (race_source == 'firstcycling' and result_state.is_stage_race and (not result_state.is_completed or not result_state.has_overall_result)) %}disabled{% endif %}>Approve</button>
+                {% if selected_stage_number is not none %}<input type="hidden" name="pcs_stage" value="{{ selected_stage_number }}">{% endif %}
+                <button type="submit" class="btn btn-success" {% if not selected_namespace or not scope_delta_status.unapproved_changes or not is_submitted_for_approval or stat_conflicts %}disabled{% endif %}>Approve</button>
             </form>
             {% endif %}
         {% endcall %}

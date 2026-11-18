@@ -6,6 +6,7 @@ from uuid import uuid4
 
 import pytest
 from sqlalchemy import create_engine, text
+from sqlalchemy_utils import create_database, drop_database
 
 from webapp.extensions import db
 from webapp.models import Role, User
@@ -40,9 +41,9 @@ def test_rider_profile_save_requires_stat_update_permission(app, client):
 def test_rider_profile_save_creates_daily_list_and_unapproved_changes(app, client, monkeypatch, role):
     schema = 'rider_list_' + uuid4().hex
     with app.app_context():
-        db.session.execute(text(f'CREATE SCHEMA {schema}'))
-        db.session.commit()
-        engine = create_engine(db.engine.url, connect_args={'options': f'-csearch_path={schema}'})
+        namespace_url = db.engine.url.set(database='worlddb_test_' + uuid4().hex)
+        create_database(namespace_url)
+        engine = create_engine(namespace_url)
         NamespaceBase.metadata.create_all(engine)
         with engine.begin() as conn:
             conn.execute(text("""
@@ -55,7 +56,7 @@ def test_rider_profile_save_creates_daily_list_and_unapproved_changes(app, clien
         db.session.commit()
         user_id = user.id
         username = user.username
-        database_name = db.engine.url.database
+        database_name = namespace_url.database
 
     namespace = SimpleNamespace(
         id=3456789,
@@ -105,5 +106,5 @@ def test_rider_profile_save_creates_daily_list_and_unapproved_changes(app, clien
         engine.dispose()
         with app.app_context():
             db.session.delete(db.session.get(User, user_id))
-            db.session.execute(text(f'DROP SCHEMA {schema} CASCADE'))
             db.session.commit()
+        drop_database(namespace_url)

@@ -6,7 +6,6 @@ from pathlib import Path
 
 def test_worker_entrypoint_and_task_context():
     script = '''
-from types import SimpleNamespace
 from unittest.mock import Mock
 
 from celery.app.utils import find_app
@@ -30,19 +29,23 @@ assert find_app('webapp.worker:celery') is celery
 webapp.create_app.assert_called_once_with()
 assert worker.run_external_sync_task.name == 'webapp.tasks.run_external_sync'
 assert worker.run_activity_monitor_run_task.name == 'webapp.tasks.run_activity_monitor_run'
+assert worker.run_activity_monitor_run_task.apply(
+    args=('local-test', 1), throw=True,
+).result == {'run_id': 1, 'status': 'disabled'}
+assert worker.poll_activity_monitor_schedules.apply(throw=True).result == {
+    'status': 'disabled', 'queued_runs': [], 'resumed_runs': [],
+}
 
-def sync_race_calendar(**kwargs):
-    assert current_app.name == __name__
-    return {'requested': 1, 'synced': 1, 'skipped': 0}
-
-worker.FirstCyclingClient = Mock(return_value=SimpleNamespace(
-    sync_race_calendar=sync_race_calendar,
-))
+worker.FirstCyclingClient = Mock()
 worker._update_sync_log = Mock()
-worker.run_external_sync_task.apply(
-    args=(1, worker.SYNC_TYPE_RACE, 2026, 'men'), throw=True,
-)
-assert worker._update_sync_log.call_args.kwargs['status'] == 'success'
+try:
+    worker.run_external_sync_task.apply(args=(1, 'fc_race_calendar', 2026, 'men'), throw=True)
+except ValueError as exc:
+    assert str(exc) == 'Unsupported sync type: fc_race_calendar'
+else:
+    raise AssertionError('Legacy FirstCycling race sync should be rejected')
+worker.FirstCyclingClient.assert_called_once()
+worker._update_sync_log.assert_called_once_with(1, status='failed', message='Unsupported sync type: fc_race_calendar', failed_count=1)
 '''
     result = subprocess.run(
         [sys.executable, '-c', script],

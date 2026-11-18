@@ -136,7 +136,7 @@ def backfill_imported_pcs_request_paths(namespace_engine, source_path: Path, *, 
     with closing(_source_connection(source_path)) as source_db:
         source_rows = source_db.execute(
             "SELECT check_id, source, source_file FROM source_checks "
-            "WHERE lower(source) IN ('pcs', 'pcs_html', 'procyclingstats')"
+            "WHERE lower(source) IN ('pcs', 'procyclingstats')"
         ).fetchall()
     candidates = {
         f"source_checks:{int(row['check_id'])}": _safe_pcs_request_path(row['source_file'])
@@ -155,7 +155,7 @@ def backfill_imported_pcs_request_paths(namespace_engine, source_path: Path, *, 
             FROM activity_monitor_source_checks c
             WHERE c.source_record_key = ANY(:keys)
               AND c.request_path IS NULL
-              AND c.source IN ('pcs', 'pcs_html', 'procyclingstats')
+              AND c.source IN ('pcs', 'procyclingstats')
         """), {"keys": list(candidates)}).mappings().all() if candidates else []
         updates = [
             (int(row['id']), candidates[row['source_record_key']])

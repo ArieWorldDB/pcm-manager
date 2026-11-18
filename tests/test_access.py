@@ -18,12 +18,18 @@ def test_startup_initializes_postgres_and_roles(app, client):
 
 @pytest.mark.parametrize("path", [
     "/admin/namespaces/create",
-    "/stats-editor/races/999/approve-stat-deltas",
+    "/stats-editor/races/pcs/999/approve-stat-deltas",
     "/stats-editor/lists/999/approve-stat-deltas",
     "/stats-editor/lists/999/submit-for-approval",
 ])
 def test_anonymous_cannot_post_protected_actions(client, path):
     response = client.post(path)
+    assert response.status_code == 302
+    assert "/login" in response.location
+
+
+def test_anonymous_cannot_view_stats_editor_profile_options(client):
+    response = client.get("/stats-editor/profile-options")
     assert response.status_code == 302
     assert "/login" in response.location
 
@@ -43,9 +49,10 @@ def test_user_manager_cannot_access_activity_monitor_or_administer(app, client, 
             session["_fresh"] = True
         assert client.get("/activity-monitor").status_code == 403
         assert client.get("/activity-monitor/riders").status_code == 403
+        assert client.get("/stats-editor/profile-options").status_code == 403
         for path in (
             "/admin/namespaces/create",
-            "/stats-editor/races/999/approve-stat-deltas",
+            "/stats-editor/races/pcs/999/approve-stat-deltas",
             "/stats-editor/lists/999/approve-stat-deltas",
             "/activity-monitor/history-transfer",
         ):

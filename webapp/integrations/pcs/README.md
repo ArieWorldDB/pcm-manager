@@ -1,11 +1,13 @@
 # ProCyclingStats (PCS)
 
-This integration parses supplied PCS race result HTML and matches riders against
-a Namespace's CDB. Parsing HTML does not fetch a remote page.
+This integration parses PCS race result pages and stores them in the shared PCS
+result-page and result-entry tables. Rider matching is performed against the
+selected Namespace's saved PCS profile links; uncertain and unmatched results
+remain stored for review.
 
 ## Usage
 
-Parse HTML without persisting results:
+Parse supplied HTML without persisting it:
 
 ```python
 from webapp.integrations.pcs import parse_pcs_race_results_html
@@ -15,51 +17,22 @@ parsed = parse_pcs_race_results_html(html, source_url=source_url)
 
 To persist results, use the configured Flask application context and a Namespace:
 
-```python
-from webapp.integrations.pcs import PcsClient
-
-client = PcsClient(namespace)
-summary = client.sync_race_results_from_html(html=html, source_url=source_url)
-```
-
-`PcsClient` replaces existing PCS results for the same Namespace and race name,
-stores parsed rows in the main database, and maintains race result mappings.
-It commits by default; pass `commit=False` to leave the transaction to the caller.
-`PcsRiderMatcher` reads the Namespace CDB to match riders, with a configurable
-`fuzzy_threshold` (default `0.84`). Parsing requires BeautifulSoup, installed via
+The Stats Editor uses the shared PCS result-page fetcher, which stores each
+parsed page and its projected result entries in the same transaction. In shared
+mode, the Activity Monitor reads those same entries after checking the selected
+Namespace's PCS profile identity. `PcsRiderMatcher` resolves only sufficiently
+certain exact PCS slug links. Parsing requires BeautifulSoup, installed via
 `beautifulsoup4` in the project requirements.
 
-## Activity Monitor profile parser
+The retired Activity Monitor profile-check workflow no longer fetches rider
+profiles from PCS. Saved profile links and historical identity checks remain
+namespace data used to decide which matched PCS result rows are safe to show.
 
-`activity_profile.py` is an offline parser for HTML supplied by the caller. It
-extracts rider profile facts and PCS result rows, including non-finishes and
-non-starts. It does not make network requests or write to the Activity Monitor
-database. A missing or unrecognized result table remains an explicit parser
-status and must not be interpreted as inactivity.
-
-The Activity Monitor fetcher always uses the rider's `/road` profile and stores
-that request path with the source check. PCS evidence counts as road activity
-only when it is attached to a successful check whose saved path ends in
-`/road`. Imported history keeps a validated PCS rider path when available;
-local file paths are discarded. Older PCS results with no saved request path
-remain visible as history but do not establish current road activity. Future-
-dated rows are also retained only in pre-existing history and never count as
-activity.
-
-For Activity Monitor identity verification, only an exact match between the
-WorldDB and PCS dates of birth is an automatic identity confirmation. A missing
-date stays ambiguous; a conflicting date is a mismatch. Nationality and race
-participation may be retained as context, but cannot confirm identity.
-
-The pure `to_activity_monitor_evidence(...)` helper converts parsed rows to
-`ActivityMonitorResult`-shaped dictionaries without saving them. It gives rows
-a stable source key, retains the original parser row in `source_payload`, and
-sets `identity_verified` only when the exact date-of-birth check passed. PCS
-race identifiers that are not numeric remain in the source payload and map to
-an empty database `race_id`; the PCS race URL is preserved separately.
-
-Activity Monitor PCS evidence can be stored without a FirstCycling ID. The
-target Namespace database must first receive the manual schema update described
-in [`activity_monitor_allow_pcs_without_fc_id.md`](../activity_monitor_allow_pcs_without_fc_id.md).
-New identity-based source keys remain stable within the Namespace and rider
-identity generation; existing FC-based source keys are unchanged.
+`slug_checks.py` performs a separate daily identity check for active Namespace
+riders without a confirmed profile slug. It checks the current saved candidate
+or a slug derived from the roster name, processes at most 100 riders per daily
+run with five seconds between requests, and is scheduled for 00:30 in
+Europe/Amsterdam. A profile is confirmed only when its name and date of birth
+match the roster and PCS has not redirected to a different canonical slug;
+other outcomes remain reviewable in the existing Activity Monitor check and
+profile history.

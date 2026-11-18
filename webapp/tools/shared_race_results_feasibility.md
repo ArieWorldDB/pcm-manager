@@ -1,8 +1,13 @@
-# Feasibility: one shared race-results store
+# Historical feasibility: one shared race-results store
+
+> Historical snapshot from before the Activity Monitor check workflow was retired. It is not a statement of current runtime dependencies.
 
 ## Decision
 
-The five-step consolidation is technically feasible, but implementation should
+This is a historical design note. Its descriptions of the FC Stats Editor,
+Activity Monitor checks, and Discord result integration below are not current
+runtime behavior; those workflows have since been removed. The five-step
+consolidation was technically feasible, but implementation should
 not enter schema/backfill work until the provider-neutral rider and event links
 have been proven with a read-only data preview. The main database already holds
 some cross-namespace source data, but there is no canonical result model that
@@ -19,9 +24,9 @@ value or the Activity Monitor’s identity review history.
 
 | Area | Current storage and meaning | Implication |
 | --- | --- | --- |
-| FirstCycling Stats Editor | `firstcycling_races`, `firstcycling_race_stages`, and `firstcycling_race_results` in `main`; race identity is FC race ID + season, result rows have FC rider ID, scope, stage, places, times and team. See [`firstcycling.py`](../models/main/firstcycling.py#L8). | Strong structured source for overall and stage results; can be moved behind a provider-neutral canonical result layer. |
+| FirstCycling Stats Editor (retired) | The old `firstcycling_races`, `firstcycling_race_stages`, and `firstcycling_race_results` tables in `main`; race identity was FC race ID + season. | Historical schema. FC race reads/writes were removed; the guarded local drop script is documented separately. |
 | PCS Stats Editor | Shared `pcs_race_calendar` and `pcs_race_result_pages` in `main`. A page is cached by PCS calendar row + stage key, and its JSON payload includes race metadata and parsed result rows. See [`pcs.py`](../models/main/pcs.py#L50) and [`routes.py`](../web/routes.py#L10426). | Already fetched once across namespaces, but it is a cached page, not normalized shared result rows. |
-| Older PCS importer | `pcs_race_results` is in `main` but has a namespace ID and stores a namespace CDB match; its natural uniqueness uses namespace, race name, position and rider name. See [`pcs.py`](../models/main/pcs.py#L10). | Not suitable as canonical identity or shared result fact. Do not carry namespace-local CDB IDs into shared results. |
+| Older PCS importer (retired from application code on 2026-11-17) | Its former `pcs_race_results` table had a namespace ID and stored a namespace CDB match; its natural uniqueness used namespace, race name, position and rider name. | Not suitable as canonical identity or shared result fact. Do not carry namespace-local CDB IDs into shared results. The table and its mappings have not been dropped. |
 | Activity Monitor | `activity_monitor_results` is in each namespace database. It stores provider, WorldDB rider ID, identity generation, FC ID, event/date/stage/places/status, source-check link, verification flag and source payload. See [`activity_monitor.py`](../models/ns/activity_monitor.py#L176). | Contains useful longitudinal evidence and provenance, but cannot be joined to Stats Editor by row ID. Preserve namespace and identity-generation lineage when converting it. |
 | Existing cross-namespace archive | `activity_monitor_global_history` in `main` is an envelope keyed by `(namespace_slug, record_type, source_record_key)`, with opaque JSON payload. See [`activity_monitor_global_history.py`](activity_monitor_global_history.py#L48). | It can supply Activity Monitor rows for a migration preview, but deliberately retains duplicates across namespaces and contains no Stats Editor feed. It is not the shared result database. |
 
@@ -44,7 +49,7 @@ and archive/restore logic in
    ID. PCS Stats Editor rows have a PCS path and display name, while Activity
    Monitor PCS rows are linked to a local monitor rider only after profile
    identity checks. The PCS parser marks identity verified only on the exact
-   date-of-birth match; see [`activity_profile.py`](../integrations/pcs/activity_profile.py#L422).
+   date-of-birth match; see the retired PCS profile-check parser (removed 2026-11-18).
    Names, age, team and date are useful match evidence, not safe universal keys.
 3. **Activity Monitor history is evidence, not always a confirmed result.**
    Rows carry identity verification and participation status. PCS records can
@@ -64,7 +69,7 @@ and archive/restore logic in
 
 1. **Inventory sources and consumers — complete.** See the field-level
    inventory below. It covers the active FC and PCS Stats Editor paths, the
-   Activity Monitor source and evidence paths, the legacy PCS importer, and
+   Activity Monitor source and evidence paths, the former legacy PCS importer, and
    application readers found by searching model/table references.
 2. **Define the shared data model — design complete.** The proposed logical
    model and its identity/conflict rules are specified below. It is ready to
@@ -200,11 +205,11 @@ identity/check evidence, and Stats Editor edit/approval workflow data.
 
 | Flow | Fetch/parse and writer | Stored data | Classification |
 | --- | --- | --- | --- |
-| FC Stats Editor | `FirstCyclingClient.sync_race_calendar` and `sync_race_results` in [`api.py`](../integrations/firstcycling/api.py#L866), scheduled by [`worker.py`](../worker.py#L320) and refreshed by `stats_editor_get_result` in [`routes.py`](../web/routes.py#L11490). | Main DB `firstcycling_races`: FC race ID, season, edition ID, name/type/category/gender/nation, description/classification, distance/profile, dates/times, locations, stage count, sync time. `firstcycling_race_stages`: FC stage ID/number/name/date/distance/profile/locations/times. `firstcycling_race_results`: FC rider/team IDs, race/stage links, race-or-stage scope, overall and stage positions/times (including seconds), still-in-race flag and sync time. | Provider facts and FC identifiers. Sync replaces stored result rows for the race; this is the active normalized FC Stats Editor result store. |
+| FC Stats Editor (retired) | Previous race-calendar/result sync and routes. | Legacy race tables, now empty in the last read-only local DB check; no current application reader or writer. | Historical reference only. |
 | PCS Stats Editor | Shared race calendar sync in [`calendar.py`](../integrations/pcs/calendar.py), called by the worker; `_fetch_pcs_race_result` in [`routes.py`](../web/routes.py#L10426) fetches/parses result pages and caches them. | Main DB `pcs_race_calendar`: PCS race path/year, category code/label, name/classification/nation, start/end dates, result URL and sync time. `pcs_race_result_pages`: race calendar FK, stage key, source URL, parser JSON payload and fetch time. Payload metadata includes race/stage name, classification, nation, stage number/type/date/profile/distance/locations; parsed rows include name, place/status, PCS rider path, team, age, time, nationality. | Provider facts, still in page-shaped JSON rather than normalized result rows. PCS rider path is provider identity; name/team/age are source attributes, not a verified WorldDB rider match. |
-| PCS legacy importer | `PcsClient.sync_race_results_from_html` in [`pcs/__init__.py`](../integrations/pcs/__init__.py#L727). | Main DB `pcs_race_results`: namespace ID, race name, rider/team names, age, position, points/time, optional namespace CDB cyclist match and match method/score, optional `RaceResultMap` ID. | Mixed source facts and namespace-specific match/workflow data. It is not used by current Stats Editor result routes and the inspected local table was empty; retain it as a legacy/alternate writer until its callers are deliberately retired. |
-| Activity Monitor FC | [`activity_monitor_sources.py`](../integrations/activity_monitor_sources.py) fetches FC rider JSON; [`firstcycling/activity_profile.py`](../integrations/firstcycling/activity_profile.py) validates/normalizes each result. `persist_source_outcome` in [`activity_monitor_evidence.py`](../integrations/activity_monitor_evidence.py#L22) persists outcome and evidence. | Namespace `activity_monitor_results`: source result key, local rider FK, WorldDB rider ID, identity generation, FC rider ID, season, FC race/edition IDs, race name/category/URL, result date, stage ID/number/name, row type, result and GC place, participation status, source/check ID, identity verification, import time and source payload. `activity_monitor_source_checks` stores source/status/coverage/identity outcomes, rider IDs/generation/season, check time, HTTP status, response hash, request path, parser version and message. | The result row is longitudinal activity evidence, with explicit identity and check provenance; coverage may be partial. Check rows describe fetch/coverage outcomes, not race results. |
-| Activity Monitor PCS | PCS rider profile fetch/parser in [`pcs/activity_profile.py`](../integrations/pcs/activity_profile.py); source outcome/evidence persistence as above. | Same namespace result/check tables. PCS-derived evidence carries race URL/name/category/year/date/stage/place/status and source payload; a numeric race ID may be absent. Link/identity verification depends on the profile identity decision (including accepted DOB checks); unverified evidence and review context must not be silently promoted to a confirmed Stats Editor result. | Provider evidence plus identity/check provenance. This source has no universal FC race/stage identifier. |
+| PCS legacy table (retired application writer) | The former `PcsClient.sync_race_results_from_html` implementation had no in-repository callers and was removed on 2026-11-17. | The `pcs_race_results` table, if present in `main`, contains namespace ID, race name, rider/team names, age, position, points/time, optional namespace CDB cyclist match and match method/score, optional `RaceResultMap` ID. | The local `main` database was verified on 2026-11-17: zero legacy result rows and zero mappings referenced by those rows. All 121 `pcs` mappings match the new PCS calendar IDs (72 overall and 49 stage scopes). The table is not dropped by application code; a guarded manual script is documented in [`README_drop_empty_legacy_pcs_race_results.md`](../../migrations/README_drop_empty_legacy_pcs_race_results.md). |
+| Activity Monitor FC | The retired Activity Monitor collector fetched and normalized FC rider JSON and persisted the outcomes; that collector was removed 2026-11-18. | Namespace `activity_monitor_results`: source result key, local rider FK, WorldDB rider ID, identity generation, FC rider ID, season, FC race/edition IDs, race name/category/URL, result date, stage ID/number/name, row type, result and GC place, participation status, source/check ID, identity verification, import time and source payload. `activity_monitor_source_checks` stores source/status/coverage/identity outcomes, rider IDs/generation/season, check time, HTTP status, response hash, request path, parser version and message. | The result row is longitudinal activity evidence, with explicit identity and check provenance; coverage may be partial. Check rows describe fetch/coverage outcomes, not race results. |
+| Activity Monitor PCS | The retired PCS profile-check collector/parser handled this flow; it was removed 2026-11-18. | Same namespace result/check tables. PCS-derived evidence carries race URL/name/category/year/date/stage/place/status and source payload; a numeric race ID may be absent. Link/identity verification depends on the profile identity decision (including accepted DOB checks); unverified evidence and review context must not be silently promoted to a confirmed Stats Editor result. | Provider evidence plus identity/check provenance. This source has no universal FC race/stage identifier. |
 | Activity Monitor archive/restore | [`activity_monitor_global_history.py`](../tools/activity_monitor_global_history.py) copies per-namespace records into main archive envelopes and restores them with namespace-local identity remapping. | Main `activity_monitor_global_history` stores namespace slug, record type, original source record key and opaque payload. | Backup/history evidence, not a canonical result fact table or Stats Editor source. Preserve namespace and identity generation. |
 
 ### Readers and downstream effects
@@ -216,9 +221,9 @@ identity/check evidence, and Stats Editor edit/approval workflow data.
 | Stats Editor workflow | Route handlers for save, submit, and approve (FC: `stats_editor_save_stat_deltas`, `stats_editor_submit_for_approval`, `stats_editor_approve_stat_deltas`; PCS equivalents). | Source result rows inform proposed CDB stat deltas. The deltas, snapshots, approvals and `RaceResultMap` links are workflow records, not the source result itself; namespace isolation and editor/approver separation remain required. |
 | Activity Monitor rider detail | `rider_detail` and its result/evidence queries in `routes.py` (including recent checks, race evidence, identity review and retirement display). | Uses namespace-local result rows and source checks to show activity and determine rider status. Its display grouping/deduplication is presentation logic, not a safe canonical merge key. |
 | Activity Monitor lists, summaries and problem queues | Multiple route queries in `routes.py` (result table references at roughly lines 4864–7697). | Computes activity summaries, latest result, missing/failed checks, and queue/problem state. These must be redirected or adapted if result facts move, while check and review semantics stay namespace-scoped. |
-| Activity Monitor planning | [`activity_monitor_planning.py`](../integrations/activity_monitor_planning.py#L95) reads verified namespace results. | Uses result history to plan subsequent checks; verification and generation filters are behavioral inputs, not optional display fields. |
-| Discord race/result integration | [`discord/__init__.py`](../integrations/discord/__init__.py#L539) reads FC result and stage models. | Downstream consumer of FC standings. It must be included in any FC storage switch. |
-| FC sync follow-up | `FirstCyclingClient.sync_race_results` reads the newly stored rows to find rider/team IDs for related FC entity sync. | A writer-side dependent read; preserve its behavior or move that lookup with the writer. |
+| Activity Monitor planning | The retired Activity Monitor planning module read verified namespace results; it was removed 2026-11-18. | Uses result history to plan subsequent checks; verification and generation filters are behavioral inputs, not optional display fields. |
+| Discord race/result integration (retired) | The former FC approval-card route read FC result rows. | Removed with the FC race workflow; stat-list Discord approvals remain. |
+| FC race sync follow-up (retired) | The former result sync used race rows to find related riders/teams. | Removed with FC race sync; the separate team/rider sync remains. |
 | Import, preview, archive tools | Activity Monitor import/preview/history tools reference the namespace result/check tables. | Operational tools and historical restore paths; adapt if schema/storage changes, but they do not make the archive a second live result consumer. |
 
 ### Inventory conclusions and boundaries
@@ -228,10 +233,11 @@ identity/check evidence, and Stats Editor edit/approval workflow data.
   Activity Monitor stores rider-linked observations in each namespace. These
   are three active representations of result information, with different
   identity and coverage semantics.
-- The legacy `pcs_race_results` model/writer is a fourth representation in the
-  codebase, but current Stats Editor routes read the shared page cache instead.
-  It also embeds namespace matching, so it is not an appropriate shared fact
-  store.
+- The legacy `pcs_race_results` model/writer was a fourth representation. Its
+  model and writer were removed from application code on 2026-11-17 after a
+  repository-wide search found no internal callers. Any physical table and its
+  `RaceResultMap` rows remain untouched pending inspection of the correct local
+  `main` database; current Stats Editor routes read the shared page cache.
 - Shared result facts may be candidates for one canonical store. Source IDs,
   URLs, timestamps, raw payloads and provider-specific values still need source
   observations. Activity Monitor identity generation, verification, coverage,
@@ -241,9 +247,9 @@ identity/check evidence, and Stats Editor edit/approval workflow data.
 - The inventory found the live model writers/readers, API routes, background
   sync/plan consumers, Discord standings consumer, and archive/import tools by
   searching direct model/table references. Static templates render route data
-  and do not issue independent result-table reads. The legacy PCS importer is
-  called out separately so it is not mistaken for the active Stats Editor
-  implementation.
+  and do not issue independent result-table reads. The retired PCS importer is
+  recorded separately so its possible physical table is not mistaken for the
+  active Stats Editor implementation.
 - This closes step 1 only. It does not settle the provider-neutral event/rider
   keys, reconcile conflicting source values, authorize a schema change, or
   clear the matching/backfill gate for steps 3–4.

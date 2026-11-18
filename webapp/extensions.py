@@ -63,13 +63,21 @@ def init_extensions(app):
     celery.conf.timezone = 'Europe/Amsterdam'
     celery.conf.beat_schedule = {
         **(celery.conf.beat_schedule or {}),
-        'poll-activity-monitor-schedules': {
-            'task': 'webapp.tasks.poll_activity_monitor_schedules',
-            'schedule': 60.0,
-        },
         'sync-pcs-national-race-calendar-daily': {
             'task': 'webapp.tasks.sync_pcs_national_race_calendar',
             'schedule': crontab(hour=4, minute=15),
+        },
+        'start-pcs-shared-results-daily': {
+            'task': 'webapp.tasks.start_pcs_shared_results_daily',
+            'schedule': crontab(hour=19, minute=30),
+        },
+        'check-pcs-unconfirmed-slugs-daily': {
+            'task': 'webapp.tasks.check_pcs_unconfirmed_slugs_daily',
+            'schedule': crontab(hour=0, minute=30),
+        },
+        'recover-pcs-shared-results': {
+            'task': 'webapp.tasks.recover_pcs_shared_results',
+            'schedule': app.config.get('PCS_SYNC_RECOVERY_INTERVAL_SECONDS', 5.0),
         },
     }
     

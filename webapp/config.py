@@ -144,11 +144,9 @@ class Config:
     FIRST_CYCLING_RETRY_ATTEMPTS = int(os.getenv('FIRST_CYCLING_RETRY_ATTEMPTS', '4'))
     FIRST_CYCLING_RETRY_BACKOFF_SECONDS = float(os.getenv('FIRST_CYCLING_RETRY_BACKOFF_SECONDS', '3'))
 
-    # Activity Monitor profile checks remain opt-in until each source is configured.
-    ACTIVITY_MONITOR_PCS_ENABLED = _env_bool('ACTIVITY_MONITOR_PCS_ENABLED', False)
-    ACTIVITY_MONITOR_FC_ENABLED = _env_bool('ACTIVITY_MONITOR_FC_ENABLED', False)
-    ACTIVITY_MONITOR_REQUEST_DELAY_SECONDS = float(
-        os.getenv('ACTIVITY_MONITOR_REQUEST_DELAY_SECONDS', '1.5')
+    ACTIVITY_MONITOR_SHARED_PCS_ENABLED = _env_bool('ACTIVITY_MONITOR_SHARED_PCS_ENABLED', False)
+    PCS_SYNC_RECOVERY_INTERVAL_SECONDS = max(
+        1.0, float(os.getenv('PCS_SYNC_RECOVERY_INTERVAL_SECONDS', '5'))
     )
     
     # Security

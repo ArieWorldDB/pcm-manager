@@ -1,50 +1,11 @@
 """Main database models for ProCyclingStats integration data"""
 from datetime import datetime
 
-from sqlalchemy import Index
+from sqlalchemy import CheckConstraint, Index
+from sqlalchemy.orm import deferred
 
 from webapp.extensions import db
 from webapp.models.main.base import MainDBModel
-
-
-class PcsRaceResult(MainDBModel):
-    """Stores raw PCS race result rows and namespace CDB rider matches."""
-
-    __tablename__ = 'pcs_race_results'
-
-    race_result_id = db.Column(db.Integer, db.ForeignKey('race_result_map.race_result_id', ondelete='SET NULL'), nullable=True, index=True)
-    namespace_id = db.Column(db.Integer, db.ForeignKey('namespaces.id', ondelete='CASCADE'), nullable=False, index=True)
-    race_name = db.Column(db.String(255), nullable=False, index=True)
-    rider_name = db.Column(db.String(255), nullable=False, index=True)
-    team_name = db.Column(db.String(255), nullable=True)
-    age = db.Column(db.Integer, nullable=True)
-    position = db.Column(db.Integer, nullable=True, index=True)
-    points = db.Column(db.Integer, nullable=True)
-    time = db.Column(db.String(40), nullable=True)
-    matched_cdb_cyclist_id = db.Column(db.Integer, nullable=True, index=True)
-    match_method = db.Column(db.String(40), nullable=True, index=True)
-    match_score = db.Column(db.Float, nullable=True)
-    last_synced_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow)
-
-    namespace = db.relationship('Namespace')
-    race_result_map = db.relationship('RaceResultMap')
-
-    __table_args__ = (
-        db.UniqueConstraint(
-            'namespace_id',
-            'race_name',
-            'position',
-            'rider_name',
-            name='uq_pcs_race_result_race_position_rider',
-        ),
-        Index('ix_pcs_result_namespace_race_position', 'namespace_id', 'race_name', 'position'),
-    )
-
-    def __repr__(self):
-        return (
-            f'<PcsRaceResult race_name={self.race_name!r} '
-            f'rider_name={self.rider_name!r} position={self.position!r}>'
-        )
 
 
 class PcsRaceCalendar(MainDBModel):
@@ -88,10 +49,18 @@ class PcsRaceResultPage(MainDBModel):
     source_url = db.Column(db.String(500), nullable=False)
     payload = db.Column(db.JSON, nullable=False)
     fetched_at = db.Column(db.DateTime, nullable=False, default=datetime.utcnow, index=True)
+    # Deferred so the app can run safely before the manual main-DB schema update.
+    time_trial_type = deferred(db.Column(db.String(3), nullable=True))
+    parcours_type = deferred(db.Column(db.String(100), nullable=True))
 
     pcs_race = db.relationship('PcsRaceCalendar', back_populates='result_pages')
 
     __table_args__ = (
         db.UniqueConstraint('pcs_race_id', 'stage_key', name='uq_pcs_result_page_race_scope'),
         Index('ix_pcs_result_page_race_fetched', 'pcs_race_id', 'fetched_at'),
+        CheckConstraint(
+            "time_trial_type IS NULL OR time_trial_type IN ('ITT', 'TTT')",
+            name='ck_pcs_result_page_time_trial_type',
+        ),
+        Index('ix_pcs_result_page_race_profile', 'pcs_race_id', 'parcours_type'),
     )
