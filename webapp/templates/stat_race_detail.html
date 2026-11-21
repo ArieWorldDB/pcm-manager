@@ -38,6 +38,27 @@
 .table-wrapper {
     overflow-x: auto;
 }
+.race-profile-toggle {
+    border: 0;
+    background: transparent;
+    border-radius: 4px;
+    padding: 0;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+}
+.race-profile-toggle:focus-visible { outline: 2px solid #0d6efd; outline-offset: 2px; }
+.race-profile-toggle:disabled { cursor: wait; }
+.race-profile-icon { display: block; }
+.profile-icon-unknown { opacity: .12; }
+.race-profile-status-icons { display: inline-flex; align-items: center; justify-content: center; gap: 4px; vertical-align: middle; }
+.race-itt-icon { display: block; object-fit: contain; }
+.race-itt-icon.is-unknown { opacity: .12; }
+.pcs-itt-toggle { border: 0; background: transparent; border-radius: 4px; padding: 0; display: inline-flex; align-items: center; justify-content: center; cursor: pointer; }
+.pcs-itt-toggle:focus-visible { outline: 2px solid #0d6efd; outline-offset: 2px; }
+.pcs-itt-toggle:disabled { cursor: wait; }
+.stage-winner-link, .stage-winner-link:hover { text-decoration: none; }
 .race-title-link {
     color: inherit;
     text-decoration: underline;
@@ -109,7 +130,15 @@ body.dark-mode .race-title-link {
     <a href="{{ race_result_url }}" class="btn btn-outline-secondary" target="_blank" rel="noopener noreferrer">Open PCS result</a>
     <a href="{{ url_for('web.stats_editor') }}" class="btn btn-outline-secondary">Back To Stats Editor</a>
 {% endcall %}
-{{ race_details(race_details_items) }}
+{{ race_details(
+    race_details_items,
+    can_update_profile=race_details_can_update_profile,
+    profile_url=race_details_profile_url,
+    profile_stage_key=race_details_profile_stage_key,
+    time_trial_type=race_details_time_trial_type,
+    can_toggle_itt=race_details_can_toggle_itt,
+    itt_url=race_details_itt_url,
+) }}
 
 <div class="panel-card card" id="stage-results">
     <div class="card-body">
@@ -187,5 +216,96 @@ body.dark-mode .race-title-link {
 {% block scripts %}
 <script>window.raceDetailConfig = { canUpdateStats: {{ can_update_stats|tojson }}, riderIdField: {{ rider_id_field|tojson }}, includeOriginalValue: {{ include_original_value|tojson }}, changeExportText: {{ change_export_text|default('', true)|tojson }}, changeExportFilename: {{ change_export_filename|default('', true)|tojson }} };</script>
 <script src="{{ url_for('static', filename='js/stat_input_controls.js', v=4) }}"></script>
-<script src="{{ url_for('static', filename='js/race_detail.js', v=26) }}"></script>
+<script src="{{ url_for('static', filename='js/race_detail.js', v=28) }}"></script>
+<script>
+document.addEventListener('click', async function (event) {
+    const ittToggle = event.target.closest('.pcs-itt-toggle[data-url]');
+    if (ittToggle && !ittToggle.disabled) {
+        const previousValue = ittToggle.dataset.isItt === 'true';
+        const nextValue = !previousValue;
+        ittToggle.dataset.isItt = String(nextValue);
+        ittToggle.setAttribute('aria-pressed', String(nextValue));
+        ittToggle.disabled = true;
+        const icon = ittToggle.querySelector('img');
+        icon.classList.toggle('is-unknown', !nextValue);
+        try {
+            const body = new URLSearchParams({
+                csrf_token: ittToggle.dataset.csrfToken,
+                stage_key: ittToggle.dataset.stageKey,
+                is_itt: nextValue ? 'true' : 'false',
+            });
+            const response = await fetch(ittToggle.dataset.url, {
+                method: 'POST', credentials: 'same-origin',
+                headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+                body: body.toString(),
+            });
+            if (!response.ok) throw new Error('Could not save time trial type');
+            ittToggle.title = nextValue ? 'Individual time trial' : 'Not a time trial';
+        } catch (error) {
+            ittToggle.dataset.isItt = String(previousValue);
+            ittToggle.setAttribute('aria-pressed', String(previousValue));
+            icon.classList.toggle('is-unknown', !previousValue);
+            ittToggle.title = 'Could not save. Please try again.';
+        } finally {
+            ittToggle.disabled = false;
+        }
+        return;
+    }
+    const toggle = event.target.closest('.race-profile-toggle[data-url]');
+    if (!toggle || toggle.disabled) return;
+
+    const profiles = [
+        'Flat',
+        'Hills, flat finish',
+        'Hills, uphill finish',
+        'Mountains, flat finish',
+        'Mountains, uphill finish',
+    ];
+    const icons = {
+        'flat': "{{ url_for('static', filename='images/race-profiles/Icon_FLA.webp') }}",
+        'hills, flat finish': "{{ url_for('static', filename='images/race-profiles/Icon_HIL.webp') }}",
+        'hills, uphill finish': "{{ url_for('static', filename='images/race-profiles/Icon_HILa.webp') }}",
+        'mountains, flat finish': "{{ url_for('static', filename='images/race-profiles/Icon_MTN.webp') }}",
+        'mountains, uphill finish': "{{ url_for('static', filename='images/race-profiles/Icon_MTNa.webp') }}",
+    };
+    const unknownIcon = "{{ url_for('static', filename='images/race-profiles/Icon_no.webp') }}";
+    const previous = toggle.dataset.profile || '';
+    const currentIndex = profiles.findIndex(value => value.toLowerCase() === previous.toLowerCase());
+    const next = currentIndex < 0 ? profiles[0] : (currentIndex === profiles.length - 1 ? '' : profiles[currentIndex + 1]);
+    const update = profile => {
+        const image = toggle.querySelector('img');
+        const normalized = (profile || '').toLowerCase();
+        image.src = icons[normalized] || unknownIcon;
+        image.alt = profile || 'Unknown profile';
+        image.title = profile || 'Unknown profile';
+        image.classList.toggle('profile-icon-unknown', !profile);
+        toggle.dataset.profile = profile;
+        toggle.title = profile || 'Unknown profile';
+    };
+
+    toggle.disabled = true;
+    update(next);
+    try {
+        const body = new URLSearchParams({
+            csrf_token: toggle.dataset.csrfToken,
+            parcours_type: next,
+            stage_key: toggle.dataset.stageKey,
+        });
+        const response = await fetch(toggle.dataset.url, {
+            method: 'POST',
+            credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+        });
+        if (!response.ok) throw new Error('Could not save route profile');
+        const result = await response.json();
+        update(result.parcours_type || '');
+    } catch (error) {
+        update(previous);
+        toggle.title = 'Could not save. Please try again.';
+    } finally {
+        toggle.disabled = false;
+    }
+});
+</script>
 {% endblock %}

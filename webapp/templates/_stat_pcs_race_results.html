@@ -7,7 +7,7 @@
 <div class="alert alert-warning mb-0" role="alert">Could not load the PCS result: {{ pcs_results_error }}</div>
 {% elif result_rows or stage_rows %}
 {% if stage_rows %}
-{{ race_stage_selector(pcs_race, stage_rows, selected_stage_number) }}
+{{ race_stage_selector(pcs_race, stage_rows, selected_stage_number, can_update_profile=can_update_stats) }}
 {% endif %}
 {% if result_rows %}
 {% include '_race_results_table.html' %}

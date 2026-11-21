@@ -1,17 +1,19 @@
+{% from '_race_profile_macros.html' import race_profile_icon %}
+
 {% macro race_title(name, source_label) -%}
 <span class="race-title-text">{{ name }}</span>
 <span class="badge text-bg-light border text-secondary">{{ source_label }}</span>
 {%- endmacro %}
 
-{% macro race_details(items) -%}
+{% macro race_details(items, can_update_profile=false, profile_url='', profile_stage_key='overall', time_trial_type=none, can_toggle_itt=false, itt_url='') -%}
 <div class="panel-card card mb-3">
     <div class="card-body">
         <h5 class="mb-3">Race details</h5>
-        <div class="row row-cols-2 row-cols-lg-5 g-3">
+        <div class="row row-cols-2 row-cols-lg-4 g-3">
             {% for item in items %}
             <div class="col">
                 <strong>{{ item[0] }}</strong>
-                <div{% if item|length > 2 %} id="{{ item[2] }}"{% endif %}>{% if item[0] in ('Start date', 'End date') and item[1] %}{{ item[1].strftime('%Y-%m-%d') if item[1].strftime is defined else (item[1]|string)[:10] }}{% elif item[1] is none or item[1] == '' or item[1]|string|lower == 'none' %}-{% else %}{{ item[1] }}{% endif %}</div>
+                <div{% if item|length > 2 %} id="{{ item[2] }}"{% endif %}>{% if item|length > 2 and item[2] == 'race-profile' %}<span class="race-profile-status-icons">{% if can_update_profile %}<button type="button" class="race-profile-toggle" data-profile="{{ item[1] or '' }}" data-stage-key="{{ profile_stage_key }}" data-url="{{ profile_url }}" data-csrf-token="{{ csrf_token() }}" aria-label="Change race profile" title="{{ item[1] or 'Unknown profile' }}">{{ race_profile_icon(item[1]) }}</button>{% else %}{{ race_profile_icon(item[1]) }}{% endif %}{% if can_toggle_itt %}<button type="button" class="pcs-itt-toggle" data-is-itt="{{ 'true' if time_trial_type == 'ITT' else 'false' }}" data-url="{{ itt_url }}" data-stage-key="{{ profile_stage_key }}" data-csrf-token="{{ csrf_token() }}" aria-pressed="{{ 'true' if time_trial_type == 'ITT' else 'false' }}" aria-label="Toggle individual time trial" title="{{ 'Individual time trial' if time_trial_type == 'ITT' else 'Not a time trial' }}"><img class="race-itt-icon{% if time_trial_type != 'ITT' %} is-unknown{% endif %}" src="{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}" alt="" width="30" height="30"></button>{% else %}<img class="race-itt-icon{% if time_trial_type != 'ITT' %} is-unknown{% endif %}" src="{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}" alt="{{ 'Individual time trial' if time_trial_type == 'ITT' else 'Not a time trial' }}" title="{{ 'Individual time trial' if time_trial_type == 'ITT' else 'Not a time trial' }}" width="30" height="30">{% endif %}</span>{% elif item[0] in ('Start date', 'End date') and item[1] %}{{ item[1].strftime('%Y-%m-%d') if item[1].strftime is defined else (item[1]|string)[:10] }}{% elif item[1] is none or item[1] == '' or item[1]|string|lower == 'none' %}-{% elif item[0] == 'Distance (km)' %}{{ '%.1f'|format(item[1]|float) }}{% else %}{{ item[1] }}{% endif %}</div>
             </div>
             {% endfor %}
         </div>
@@ -36,14 +38,14 @@
 </div>
 {%- endmacro %}
 
-{% macro race_stage_selector(race, stage_rows, selected_stage_number=None, stage_status_map={}) -%}
+{% macro race_stage_selector(race, stage_rows, selected_stage_number=None, stage_status_map={}, can_update_profile=False) -%}
 <div class="panel-card card" id="stage-selection">
     <div class="card-body">
-        <h5 class="mb-3">Results ({{ stage_rows|length + (1 if not (stage_rows|selectattr('is_overall')|list) else 0) }})</h5>
+        <h5 class="mb-3">Results</h5>
         <div class="table-wrapper">
             <table class="table table-sm align-middle mb-0">
                 <thead>
-                    <tr><th>Status</th><th>Result</th><th>Stage date</th><th>Profile</th><th>Distance (km)</th></tr>
+                    <tr><th>Status</th><th>Stage date</th><th>Stage</th><th>Winner</th><th class="text-center">Profile</th><th>Distance (km)</th></tr>
                 </thead>
                 <tbody>
                     {% for stage in stage_rows %}
@@ -55,6 +57,7 @@
                             {% if stage_status.get('is_approved') %}<span class="ms-1 text-success" title="Approved">☑</span>
                             {% elif stage_status.get('has_stat_changes') %}<span class="ms-1" title="Approval pending">⏳</span>{% endif %}
                         </td>
+                        <td>{% if stage.get('stage_date') and stage.get('stage_date')|string|lower != 'none' %}{{ stage.get('stage_date') }}{% else %}-{% endif %}</td>
                         <td>
                             {% if stage.get('is_overall') %}
                             <a href="{{ url_for('web.stats_editor_race_detail_by_source', source='pcs', race_id=race.id) }}#stage-selection" class="text-decoration-none">{{ stage.name or 'General classification' }}</a>
@@ -62,15 +65,16 @@
                             <a href="{{ url_for('web.stats_editor_race_detail_by_source', source='pcs', race_id=race.id, pcs_stage=stage.stage_number) }}#stage-selection" class="text-decoration-none">{{ stage.name or ('Stage ' ~ stage.stage_number) }}</a>
                             {% endif %}
                         </td>
-                        <td>{% if stage.get('stage_date') and stage.get('stage_date')|string|lower != 'none' %}{{ stage.get('stage_date') }}{% else %}-{% endif %}</td>
-                        <td>{% if stage.get('is_overall') or not stage.get('parcours_type') or stage.get('parcours_type')|string|lower == 'none' %}-{% else %}{{ stage.get('parcours_type') }}{% endif %}</td>
-                        <td>{% if stage.get('is_overall') %}-{% else %}{{ stage.get('distance_km') if stage.get('distance_km') is not none else '-' }}{% endif %}</td>
+                        <td>{% if stage.get('winner_url') and stage.get('winner_name') %}<a class="stage-winner-link" href="{{ stage.get('winner_url') }}">{{ stage.get('winner_name') }}</a>{% else %}{{ stage.get('winner_name') or '-' }}{% endif %}</td>
+                        <td class="text-center">{% if stage.get('is_overall') %}-{% else %}<span class="race-profile-status-icons">{% if can_update_profile %}<button type="button" class="race-profile-toggle" data-profile="{{ stage.get('parcours_type') or '' }}" data-stage-key="stage:{{ stage.stage_number }}" data-url="{{ url_for('web.stats_editor_cycle_pcs_profile', pcs_race_id=race.id) }}" data-csrf-token="{{ csrf_token() }}" aria-label="Change profile for {{ stage.name or ('Stage ' ~ stage.stage_number) }}" title="{{ stage.get('parcours_type') or 'Unknown profile' }}">{{ race_profile_icon(stage.get('parcours_type')) }}</button>{% else %}{{ race_profile_icon(stage.get('parcours_type')) }}{% endif %}<img class="race-itt-icon{% if stage.get('time_trial_type') != 'ITT' %} is-unknown{% endif %}" src="{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}" alt="{{ 'Time trial' if stage.get('time_trial_type') == 'ITT' else 'Not a time trial' }}" title="{{ 'Time trial' if stage.get('time_trial_type') == 'ITT' else 'Not a time trial' }}" width="30" height="30" loading="lazy"></span>{% endif %}</td>
+                        <td>{% if stage.get('is_overall') or stage.get('distance_km') is none %}-{% else %}{{ '%.1f'|format(stage.get('distance_km')|float) }}{% endif %}</td>
                     </tr>
                     {% endfor %}
                     {% if not (stage_rows|selectattr('is_overall')|list) %}
                     <tr {% if selected_stage_number is none %}class="table-primary"{% endif %}>
                         <td class="text-nowrap">
                         </td>
+                        <td>-</td>
                         <td><a href="{{ url_for('web.stats_editor_race_detail_by_source', source='pcs', race_id=race.id) }}#stage-selection" class="text-decoration-none">Overall result</a></td>
                         <td>-</td>
                         <td>-</td>

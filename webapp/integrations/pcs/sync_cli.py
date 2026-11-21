@@ -14,8 +14,9 @@ from webapp.integrations.activity_monitor_shared_pcs import (
 )
 from webapp.integrations.pcs.shared_results import audit_shared_results
 from webapp.integrations.pcs.sync_jobs import (
-    create_sync_job, create_uci_backfill_job, request_sync_pause, resume_sync_job,
-    retry_timed_out_races, retry_transient_network_races, sync_job_status,
+    create_sync_job, create_uci_backfill_job, enqueue_missing_championship_results,
+    request_sync_pause, resume_sync_job, retry_timed_out_races,
+    retry_transient_network_races, sync_job_status,
 )
 from webapp.models.main.namespace import Namespace
 
@@ -44,7 +45,7 @@ def start_initial():
               help='Latest season to include; defaults to the current year in Amsterdam.')
 @with_appcontext
 def start_uci_backfill(anchor_year):
-    """Queue the nine UCI circuit calendars for three seasons and their results."""
+    """Queue UCI and World Championships calendars for three seasons and results."""
     year = anchor_year or datetime.now(ZoneInfo('Europe/Amsterdam')).year
     try:
         job_id = create_uci_backfill_job(anchor_year=year)
@@ -55,6 +56,40 @@ def start_uci_backfill(anchor_year):
     except RuntimeError as exc:
         raise click.ClickException(str(exc)) from exc
     click.echo(f'PCS UCI backfill job {job_id} queued for {year - 2}–{year}.')
+
+
+@pcs_sync.command('queue-championship-results')
+@click.argument('job_id', type=int)
+@with_appcontext
+def queue_championship_results(job_id):
+    """Queue uncached championship results on a stopped UCI backfill job."""
+    try:
+        count = enqueue_missing_championship_results(job_id)
+    except ValueError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if not count:
+        click.echo('No uncached championship result pages were found for this job.')
+        return
+    try:
+        if not resume_sync_job(job_id):
+            raise click.ClickException('The PCS backfill could not be resumed.')
+    except IntegrityError as exc:
+        raise click.ClickException('Another PCS job is already open; resolve it first.') from exc
+    from webapp.worker import run_pcs_shared_results_step_task
+    run_pcs_shared_results_step_task.apply_async(args=(job_id,))
+    click.echo(f'Queued {count} championship race result pages on PCS job {job_id}.')
+
+
+@pcs_sync.command('prune-empty-races')
+@click.option('--limit', type=click.IntRange(min=1, max=500), default=None,
+              help='Optional upper bound for this run; by default check every eligible race.')
+@with_appcontext
+def prune_empty_races(limit):
+    """Run a bounded cleanup of old races confirmed empty on every PCS scope."""
+    from webapp.integrations.pcs.empty_race_cleanup import run_empty_race_cleanup
+
+    summary = run_empty_race_cleanup(limit=limit)
+    click.echo(json.dumps(summary, ensure_ascii=False, indent=2))
 
 
 @pcs_sync.command('pause')

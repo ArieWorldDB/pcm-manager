@@ -8,7 +8,7 @@ from urllib.parse import urlencode, urljoin, urlsplit
 from urllib.request import Request, urlopen
 
 from bs4 import BeautifulSoup
-from sqlalchemy import text
+from sqlalchemy import func, text
 
 from webapp.extensions import db
 from webapp.integrations.nationality import canonical_nationality
@@ -18,7 +18,9 @@ logger = logging.getLogger('pcs.calendar')
 PCS_BASE_URL = 'https://www.procyclingstats.com'
 CATEGORIES = {1: 'Men', 3: 'Men U23', 4: 'Men Junior'}
 UCI_CIRCUIT_CODES = (1, 26, 13, 11, 12, 14, 18, 23, 15)
-_WOMEN_RACE_TOKEN = re.compile(r'\s(?:WU|WE|WJ)\s')
+CHAMPIONSHIPS_CATEGORY_CODE = 0  # Internal calendar scope, not a PCS classification.
+CHAMPIONSHIPS_CATEGORY_LABEL = 'Championships'
+_WOMEN_RACE_TOKEN = re.compile(r'\b(?:WU|WE|WJ)\b')
 
 
 class PcsCalendarError(Exception):
@@ -33,20 +35,51 @@ def _fetch(url):
         return response.read().decode('utf-8', errors='replace')
 
 
-def _safe_race_path(href, year):
+def _safe_race_path(href, year, *, allow_reused_slug=False):
     absolute = urljoin(PCS_BASE_URL, href or '')
     parsed = urlsplit(absolute)
     if parsed.scheme != 'https' or parsed.netloc.lower() not in {'www.procyclingstats.com', 'procyclingstats.com'}:
         return None
-    path = parsed.path.rstrip('/')
-    if not path.startswith('/race/') or not re.search(rf'-{year}(?:-|$)', path):
+    path = _canonical_race_path(parsed.path.rstrip('/'))
+    if not path.startswith('/race/') or (
+        not allow_reused_slug and not re.search(rf'-{year}(?:-|$)', path)
+    ):
         return None
     return path
+
+
+def _canonical_race_path(path):
+    """Treat PCS result, GC, and truncated result suffixes as race aliases."""
+    canonical = re.sub(r'-(\d{4})-re?$', r'-\1', path or '', flags=re.IGNORECASE)
+    return re.sub(r'-(?:res(?:u(?:l(?:t)?)?)?|gc)$', '', canonical, flags=re.IGNORECASE)
+
+
+def _find_existing_race(path, year):
+    """Find the canonical race record before any PCS alias record."""
+    canonical_path = _canonical_race_path(path)
+    return PcsRaceCalendar.query.filter(
+        PcsRaceCalendar.season_year == year,
+        func.regexp_replace(
+            func.regexp_replace(
+                PcsRaceCalendar.pcs_race_path, r'-(\d{4})-re?$', r'-\1', 'i',
+            ), r'-(res(u(l(t)?)?)?|gc)$', '', 'i',
+        ) == canonical_path,
+    ).order_by(
+        (PcsRaceCalendar.pcs_race_path != canonical_path).asc(),
+        PcsRaceCalendar.id,
+    ).first()
 
 
 def _parse_calendar_dates(value, year):
     """Return start/end dates from PCS calendar dates such as ``31.05 - 02.06``."""
     text = re.sub(r'\s+', ' ', value or '').strip()
+    iso_date = re.search(r'\b(\d{4})-(\d{2})-(\d{2})\b', text)
+    if iso_date:
+        try:
+            parsed_date = date(*map(int, iso_date.groups()))
+            return parsed_date, parsed_date
+        except ValueError:
+            return None, None
     date_range = re.search(
         r'\b(\d{1,2})[./-](\d{1,2})\s*[-–]\s*(\d{1,2})[./-](\d{1,2})\b',
         text,
@@ -79,8 +112,44 @@ def _calendar_classification(values):
     return next((value for value in values if pattern.fullmatch(value)), None)
 
 
-def _has_published_result(row, result_path):
-    return result_path.endswith(('-result', '-gc')) or row.select_one('a[href*="rider/"]')
+def _is_junior_race(name, category_code, category_label):
+    normalized_name = re.sub(r'\s+', ' ', name or '').strip()
+    padded_name = f' {normalized_name} '
+    return bool(
+        category_code in {4, 15}
+        or category_label == 'Men Junior'
+        or ' MJ ' in padded_name
+    )
+
+
+def _preserve_junior_race(existing, values):
+    """Keep a positive junior classification when another calendar reimports it."""
+    if existing.is_junior_race and not values.get('is_junior_race'):
+        return {**values, 'is_junior_race': True}
+    return values
+
+
+def _calendar_nation(cells, values):
+    """Extract a calendar row's country from its flag or country-code cell."""
+    race_cell = cells[1] if len(cells) > 1 else None
+    race_flag = race_cell.select_one('.flag') if race_cell else None
+    nation = None
+    if race_flag:
+        flag_classes = race_flag.get('class') or []
+        nation = next(
+            (
+                value for value in flag_classes
+                if re.fullmatch(r'[a-z]{2,3}', value, re.I)
+                and value.casefold() != 'flag'
+            ),
+            None,
+        )
+    if not nation:
+        nation = next((value for value in values if len(value) == 3 and value.isupper()), None)
+    if not nation:
+        flag = race_cell.select_one('img[alt], img[title]') if race_cell else None
+        nation = ((flag.get('alt') or flag.get('title')) if flag else None)
+    return canonical_nationality(nation)
 
 
 def parse_national_race_calendar(html, *, year, category_code, month):
@@ -96,24 +165,28 @@ def parse_national_race_calendar(html, *, year, category_code, month):
         link = row.select_one('a[href*="race/"]')
         if not link:
             continue
-        path = _safe_race_path(link.get('href'), year)
-        if not path:
-            continue
         cells = row.find_all(['td', 'th'], recursive=False)
         text = [re.sub(r'\s+', ' ', cell.get_text(' ', strip=True)).strip() for cell in cells]
-        result_url = urljoin(PCS_BASE_URL, link.get('href'))
-        result_path = urlsplit(result_url).path.rstrip('/')
-        # Stage races may link to the event or GC page instead of a ``-result``
-        # URL. A linked winner is sufficient evidence that PCS has published results.
-        if not _has_published_result(row, result_path):
-            continue
-        race_name = re.sub(r'\s+', ' ', link.get_text(' ', strip=True)).strip()
-        if not race_name:
-            continue
         start_date, end_date = _parse_calendar_dates(
             cells[0].get('date') or cells[0].get_text(' ', strip=True) if cells else '',
             year,
         )
+        reused_slug_matches_calendar = bool(
+            start_date and start_date.year == year
+            and (end_date is None or end_date.year in (year, year + 1))
+        )
+        path = _safe_race_path(
+            link.get('href'), year, allow_reused_slug=reused_slug_matches_calendar,
+        )
+        if not path:
+            continue
+        result_url = urljoin(PCS_BASE_URL, path)
+        # Calendar presence is enough to save the race. Result availability is
+        # checked separately by the result sync, which can retry after PCS
+        # publishes the results.
+        race_name = re.sub(r'\s+', ' ', link.get_text(' ', strip=True)).strip()
+        if not race_name:
+            continue
         if start_date and end_date:
             month_start = date(year, month, 1)
             month_end = date(year, month, monthrange(year, month)[1])
@@ -122,31 +195,16 @@ def parse_national_race_calendar(html, *, year, category_code, month):
         elif start_date and start_date.month != month:
             continue
         classification = _calendar_classification(text)
-        nation = None
-        race_cell = cells[1] if len(cells) > 1 else None
-        race_flag = race_cell.select_one('.flag') if race_cell else None
-        if race_flag:
-            flag_classes = race_flag.get('class') or []
-            nation = next(
-                (
-                    value for value in flag_classes
-                    if re.fullmatch(r'[a-z]{2,3}', value, re.I)
-                    and value.casefold() != 'flag'
-                ),
-                None,
-            )
-        if not nation:
-            nation = next((value for value in text if len(value) == 3 and value.isupper()), None)
-        if not nation:
-            flag = race_cell.select_one('img[alt], img[title]') if race_cell else None
-            nation = ((flag.get('alt') or flag.get('title')) if flag else None)
-        nation = canonical_nationality(nation)
+        nation = _calendar_nation(cells, text)
         races[path] = {
             'pcs_race_path': path,
             'season_year': year,
             'category_code': category_code,
             'category_label': CATEGORIES[category_code],
             'name': race_name,
+            'is_junior_race': _is_junior_race(
+                race_name, category_code, CATEGORIES[category_code],
+            ),
             'classification': classification,
             'nation_name': nation,
             'start_date': start_date,
@@ -154,6 +212,93 @@ def parse_national_race_calendar(html, *, year, category_code, month):
             'result_url': result_url,
         }
     return list(races.values())
+
+
+def parse_championship_race_calendar(html, *, year):
+    """Parse World Championship race entries from the PCS calendar."""
+    soup = BeautifulSoup(html or '', 'html.parser')
+    if soup.select_one('table') is None:
+        raise PcsCalendarError('PCS championship calendar page contains no table')
+
+    races = {}
+    for row in soup.select('table tbody tr'):
+        link = row.select_one('a[href*="race/"]')
+        if not link:
+            continue
+        path = _safe_race_path(link.get('href'), year)
+        if not path:
+            continue
+        result_url = urljoin(PCS_BASE_URL, path)
+        race_name = re.sub(r'\s+', ' ', link.get_text(' ', strip=True)).strip()
+        if not race_name or _WOMEN_RACE_TOKEN.search(race_name):
+            continue
+        if not race_name.casefold().startswith('world championships'):
+            race_name = f'World Championships {race_name}'
+        if re.search(r'(?:^|-)itt(?:-|$)', path, re.I) and not re.search(
+            r'\bITT\b', race_name, re.I,
+        ):
+            race_name = f'{race_name} - ITT'
+
+        cells = row.find_all(['td', 'th'], recursive=False)
+        values = [re.sub(r'\s+', ' ', cell.get_text(' ', strip=True)).strip() for cell in cells]
+        start_date, end_date = _parse_calendar_dates(
+            cells[0].get('date') or cells[0].get_text(' ', strip=True) if cells else '', year,
+        )
+        races[path] = {
+            'pcs_race_path': path,
+            'season_year': year,
+            'category_code': CHAMPIONSHIPS_CATEGORY_CODE,
+            'category_label': CHAMPIONSHIPS_CATEGORY_LABEL,
+            'name': race_name,
+            'is_junior_race': _is_junior_race(
+                race_name, CHAMPIONSHIPS_CATEGORY_CODE, CHAMPIONSHIPS_CATEGORY_LABEL,
+            ),
+            # The schedule's decimal cells describe event metrics, not PCS race
+            # classifications. Do not expose them as the Stats Editor category.
+            'classification': None,
+            'nation_name': _calendar_nation(cells, values),
+            'start_date': start_date,
+            'end_date': end_date,
+            'result_url': result_url,
+        }
+    return list(races.values())
+
+
+def sync_championship_race_calendar(*, year=None):
+    """Fetch and upsert the PCS World Championships calendar for one year."""
+    year = int(year or date.today().year)
+    url = f'{PCS_BASE_URL}/races.php?{urlencode({"s": "championships", "year": year, "filter": "Filter"})}'
+    summary = {'requested': 1, 'synced': 0, 'failed': 0, 'races': 0, 'errors': []}
+    try:
+        rows = parse_championship_race_calendar(_fetch(url), year=year)
+        for values in rows:
+            existing = _find_existing_race(values['pcs_race_path'], year)
+            if existing is None:
+                existing = PcsRaceCalendar(**values)
+                db.session.add(existing)
+            else:
+                values = _preserve_junior_race(existing, values)
+                preserve_existing_scope = (
+                    existing.category_label in CATEGORIES.values()
+                    or existing.category_label.startswith('UCI circuit ')
+                    or existing.category_label == CHAMPIONSHIPS_CATEGORY_LABEL
+                )
+                for key, value in values.items():
+                    if key in ('category_code', 'category_label') and preserve_existing_scope:
+                        continue
+                    if key == 'nation_name' and not value and existing.nation_name:
+                        continue
+                    setattr(existing, key, value)
+                existing.last_synced_at = datetime.utcnow()
+        db.session.commit()
+        summary['synced'] = 1
+        summary['races'] = len(rows)
+    except Exception as exc:
+        db.session.rollback()
+        summary['failed'] = 1
+        summary['errors'].append({'year': year, 'error': str(exc)[:300]})
+        logger.exception('PCS championship calendar sync failed for %s', year)
+    return summary
 
 
 def parse_uci_race_calendar(html, *, year, circuit_code):
@@ -172,26 +317,32 @@ def parse_uci_race_calendar(html, *, year, circuit_code):
         race_name = re.sub(r'\s+', ' ', link.get_text(' ', strip=True)).strip()
         if not race_name or _WOMEN_RACE_TOKEN.search(race_name):
             continue
-        path = _safe_race_path(link.get('href'), year)
-        if not path:
-            continue
-        result_url = urljoin(PCS_BASE_URL, link.get('href'))
-        if not _has_published_result(row, urlsplit(result_url).path.rstrip('/')):
-            continue
-
         cells = row.find_all(['td', 'th'], recursive=False)
-        values = [re.sub(r'\s+', ' ', cell.get_text(' ', strip=True)).strip() for cell in cells]
         start_date, end_date = _parse_calendar_dates(
             cells[0].get('date') or cells[0].get_text(' ', strip=True) if cells else '', year,
         )
+        reused_slug_matches_calendar = bool(
+            circuit_code == 23 and start_date and start_date.year == year
+            and (end_date is None or end_date.year in (year, year + 1))
+        )
+        path = _safe_race_path(
+            link.get('href'), year, allow_reused_slug=reused_slug_matches_calendar,
+        )
+        if not path:
+            continue
+        result_url = urljoin(PCS_BASE_URL, path)
+        values = [re.sub(r'\s+', ' ', cell.get_text(' ', strip=True)).strip() for cell in cells]
         races[path] = {
             'pcs_race_path': path,
             'season_year': year,
             'category_code': circuit_code,
             'category_label': f'UCI circuit {circuit_code}',
             'name': race_name,
+            'is_junior_race': _is_junior_race(
+                race_name, circuit_code, f'UCI circuit {circuit_code}',
+            ),
             'classification': _calendar_classification(values),
-            'nation_name': None,
+            'nation_name': _calendar_nation(cells, values),
             'start_date': start_date,
             'end_date': end_date,
             'result_url': result_url,
@@ -220,7 +371,7 @@ def sync_uci_race_calendar(*, year=None, circuit_codes=None, sleep_seconds=1.0):
     for circuit_code in circuit_codes:
         summary['requested'] += 1
         query = urlencode({
-            's': '', 'year': year, 'circuit': circuit_code, 'class': '', 'filter': 'Filter',
+            's': 'uci', 'year': year, 'circuit': circuit_code, 'class': '', 'filter': 'Filter',
         })
         url = f'{PCS_BASE_URL}/races.php?{query}'
         try:
@@ -229,17 +380,17 @@ def sync_uci_race_calendar(*, year=None, circuit_codes=None, sleep_seconds=1.0):
             )
             memberships = []
             for values in rows:
-                existing = PcsRaceCalendar.query.filter_by(
-                    pcs_race_path=values['pcs_race_path'], season_year=year,
-                ).first()
+                existing = _find_existing_race(values['pcs_race_path'], year)
                 if existing is None:
                     existing = PcsRaceCalendar(**values)
                     db.session.add(existing)
                     db.session.flush()
                 else:
+                    values = _preserve_junior_race(existing, values)
                     preserve_existing_scope = (
                         existing.category_label in CATEGORIES.values()
                         or existing.category_label.startswith('UCI circuit ')
+                        or existing.category_label == CHAMPIONSHIPS_CATEGORY_LABEL
                     )
                     for key, value in values.items():
                         if key in ('category_code', 'category_label') and preserve_existing_scope:
@@ -278,6 +429,7 @@ def sync_national_races(*, year=None, months=None, category_codes=None, sleep_se
     if not category_codes or any(code not in CATEGORIES for code in category_codes):
         raise ValueError('Unsupported PCS national race category')
     summary = {'requested': 0, 'synced': 0, 'failed': 0, 'races': 0, 'errors': []}
+    record_uci_membership = uci_calendar_storage_ready()
     for month in months:
         for category_code in category_codes:
             label = CATEGORIES[category_code]
@@ -287,15 +439,18 @@ def sync_national_races(*, year=None, months=None, category_codes=None, sleep_se
                 rows = parse_national_race_calendar(
                     _fetch(url), year=year, category_code=category_code, month=month,
                 )
+                uci_memberships = []
                 for values in rows:
-                    existing = PcsRaceCalendar.query.filter_by(
-                        pcs_race_path=values['pcs_race_path'], season_year=year,
-                    ).first()
+                    existing = _find_existing_race(values['pcs_race_path'], year)
                     if existing is None:
                         existing = PcsRaceCalendar(**values)
                         db.session.add(existing)
                     else:
-                        preserve_uci_scope = existing.category_label.startswith('UCI circuit ')
+                        values = _preserve_junior_race(existing, values)
+                        preserve_uci_scope = (
+                            existing.category_label.startswith('UCI circuit ')
+                            or existing.category_label == CHAMPIONSHIPS_CATEGORY_LABEL
+                        )
                         for key, value in values.items():
                             if key in ('category_code', 'category_label') and preserve_uci_scope:
                                 continue
@@ -303,7 +458,18 @@ def sync_national_races(*, year=None, months=None, category_codes=None, sleep_se
                                 continue
                             setattr(existing, key, value)
                         existing.last_synced_at = datetime.utcnow()
+                    if record_uci_membership:
+                        db.session.flush()
+                        uci_memberships.append({'race_id': existing.id, 'circuit_code': 23})
                 db.session.commit()
+                if uci_memberships:
+                    with db.engines['main'].begin() as connection:
+                        connection.execute(text('''
+                            INSERT INTO pcs_race_calendar_uci_circuits (pcs_race_id, circuit_code)
+                            VALUES (:race_id, :circuit_code)
+                            ON CONFLICT (pcs_race_id, circuit_code)
+                            DO UPDATE SET last_seen_at = NOW()
+                        '''), uci_memberships)
                 summary['synced'] += 1
                 summary['races'] += len(rows)
             except Exception as exc:

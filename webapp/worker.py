@@ -521,6 +521,45 @@ def check_pcs_unconfirmed_slugs_daily_task():
         raise
 
 
+@_celery.task(name='webapp.tasks.prune_empty_pcs_races_weekly')
+def prune_empty_pcs_races_weekly_task():
+    """Remove old PCS races only after fresh empty checks of every result scope."""
+    sync_log = ExternalSyncLog(
+        provider='pcs',
+        sync_type='pcs_empty_race_cleanup',
+        season_year=datetime.now(ZoneInfo('Europe/Amsterdam')).year,
+        status='running',
+        message='Checking old PCS races for complete empty result sets',
+    )
+    db.session.add(sync_log)
+    db.session.commit()
+    try:
+        from webapp.integrations.pcs.empty_race_cleanup import run_empty_race_cleanup
+
+        summary = run_empty_race_cleanup()
+        sync_log.status = 'partial' if summary['errors'] or summary['unconfirmed'] else 'success'
+        sync_log.requested_count = summary['candidates']
+        sync_log.synced_count = summary['deleted']
+        sync_log.failed_count = len(summary['errors']) + summary['unconfirmed']
+        sync_log.message = (
+            f"PCS empty-race cleanup: {summary['deleted']} deleted, "
+            f"{summary['unconfirmed']} not confirmed, {len(summary['errors'])} errors, "
+            f"{summary.get('remaining', 0)} left for next run"
+        )[:255]
+        sync_log.details_json = json.dumps(summary)
+        db.session.commit()
+        return summary
+    except Exception as exc:
+        db.session.rollback()
+        existing_log = ExternalSyncLog.query.get(sync_log.id)
+        if existing_log:
+            existing_log.status = 'failed'
+            existing_log.message = f'PCS empty-race cleanup failed: {str(exc)[:180]}'
+            db.session.commit()
+        logger.exception('Weekly PCS empty-race cleanup failed')
+        raise
+
+
 def __getattr__(name):
     """Initialize Flask only when the Celery CLI loads the worker app."""
     global _worker_app

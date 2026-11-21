@@ -14,9 +14,11 @@ start a network request, touch result pages, or change the Activity Monitor.
 4. Start the resumable scan with
    `docker compose exec -T web flask pcs-sync start-uci-backfill`. Its default
    anchor year is the current year in Europe/Amsterdam; `--anchor-year` can set a
-   fixed year explicitly. It queues nine circuits for that year and the two
-   preceding years, then queues results only for races discovered in those
-   calendars.
+   fixed year explicitly. It queues nine circuits and the World Championships
+   calendar for that year and the two preceding years, then queues results only
+   for races discovered in those calendars. Install the additional manual
+   schema update in [`README_pcs_championship_calendar.md`](README_pcs_championship_calendar.md)
+   first to enable the championship checkpoints.
 5. Use `docker compose exec -T web flask pcs-sync status JOB_ID`,
    `docker compose exec -T web flask pcs-sync pause JOB_ID`, and
    `docker compose exec -T web flask pcs-sync resume JOB_ID` to
@@ -28,7 +30,7 @@ Rows with a whitespace-delimited uppercase `WU`, `WE`, or `WJ` token in the race
 name are excluded; male `MU`, `MJ`, and `ME` classes remain eligible.
 
 After this schema is installed, the existing 19:30 daily shared-results job also
-refreshes the nine UCI calendars for the current year as durable checkpoints
-before queuing that year's missing and due-for-review race results. Calendar
-requests therefore use the same pause, 429 stop, and retry-wait handling as the
-result requests.
+refreshes the nine UCI calendars and the World Championships calendar for the
+current year as durable checkpoints before queuing that year's missing and
+due-for-review race results. Calendar requests therefore use the same pause,
+429 stop, and retry-wait handling as the result requests.

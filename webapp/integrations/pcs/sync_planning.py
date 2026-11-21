@@ -67,6 +67,14 @@ def plan_result_requests(race, pages, *, today, now, initial_fill=False, initial
         if stored_page is None:
             return ResultRequest(stage_number=stage_number, force_refresh=False)
         fetched_at = stored_page.fetched_at
+        if (stored_page.payload or {}).get('_pcs_result_state') == 'no_result_rows':
+            retry_due = (
+                fetched_at is None
+                or _utc_naive(fetched_at) <= now_utc - timedelta(days=1)
+            )
+            if retry_due:
+                return ResultRequest(stage_number=stage_number, force_refresh=True)
+            return None
         if refresh_allowed and fetched_at and _utc_naive(fetched_at) <= now_utc - timedelta(days=14):
             return ResultRequest(stage_number=stage_number, force_refresh=True)
         return None

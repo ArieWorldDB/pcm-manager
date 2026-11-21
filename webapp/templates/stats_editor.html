@@ -1,5 +1,23 @@
 {% extends "base.html" %}
 
+{% macro profile_icon(profile) -%}
+    {% set label = (profile or '')|trim %}
+    {% set normalized = label|lower %}
+    {% if not label or normalized in ['none', 'null', '-'] %}<img class="race-profile-icon profile-icon-unknown" src="{{ url_for('static', filename='images/race-profiles/Icon_no.webp') }}" alt="Unknown profile" title="Unknown profile" loading="lazy" referrerpolicy="no-referrer">
+    {% else %}
+        {% if 'mountain' in normalized %}
+            {% set icon = url_for('static', filename='images/race-profiles/Icon_MTNa.webp') if 'uphill' in normalized else url_for('static', filename='images/race-profiles/Icon_MTN.webp') %}
+        {% elif 'hill' in normalized %}
+            {% set icon = url_for('static', filename='images/race-profiles/Icon_HILa.webp') if 'uphill' in normalized else url_for('static', filename='images/race-profiles/Icon_HIL.webp') %}
+        {% elif 'flat' in normalized %}
+            {% set icon = url_for('static', filename='images/race-profiles/Icon_FLA.webp') %}
+        {% else %}
+            {% set icon = none %}
+        {% endif %}
+        {% if icon %}<img class="race-profile-icon" src="{{ icon }}" alt="{{ label }}" title="{{ label }}" loading="lazy" referrerpolicy="no-referrer">{% else %}-{% endif %}
+    {% endif %}
+{%- endmacro %}
+
 {% block title %}Stats Editor - WDB{% endblock %}
 {% block body_class %}stats-editor-page{% endblock %}
 
@@ -34,6 +52,12 @@
     .stage-row td {
         font-size: 0.9rem;
     }
+    .race-row.expanded-race > td {
+        box-shadow: inset 0 1px #000;
+    }
+    .stage-row.expanded-race-end > td {
+        border-bottom: 1px solid #000 !important;
+    }
     .race-name-cell {
         max-width: 390px;
         overflow: hidden;
@@ -65,6 +89,61 @@
         white-space: nowrap;
         font-size: .9rem;
     }
+    .race-results-table .winner-link-known,
+    .race-results-table .winner-link-known:hover {
+        color: #000 !important;
+        text-decoration: none !important;
+    }
+    .race-results-table .winner-link-external,
+    .race-results-table .winner-link-external:hover {
+        color: #495057 !important;
+        text-decoration: none !important;
+    }
+    .race-profile-icon {
+        display: block;
+        width: 30px;
+        height: 30px;
+        margin: 0 auto;
+        object-fit: contain;
+    }
+    .profile-icon-unknown { opacity: .12; }
+    .race-profile-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        appearance: none;
+        cursor: pointer;
+    }
+    .race-profile-toggle:focus:not(:focus-visible),
+    .pcs-itt-toggle:focus:not(:focus-visible) { outline: none; }
+    .race-profile-toggle:focus-visible { outline: 2px solid #0d6efd; outline-offset: 2px; }
+    .pcs-itt-toggle {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 0;
+        border: 0 !important;
+        background: transparent !important;
+        box-shadow: none !important;
+        appearance: none;
+        cursor: pointer;
+    }
+    .pcs-itt-toggle img {
+        display: block;
+        width: 30px;
+        height: 30px;
+        object-fit: contain;
+        opacity: .12;
+        transition: opacity .12s ease-in-out;
+    }
+    .pcs-itt-toggle[aria-pressed="true"] img { opacity: 1; }
+    .pcs-itt-toggle:disabled { cursor: default; }
+    .pcs-itt-toggle:focus-visible { outline: 2px solid #0d6efd; outline-offset: 2px; }
+    .race-results-table tbody td:nth-child(5) { text-align: center; }
     .race-results-table thead th {
         background: #f8f9fa;
         font-weight: 700;
@@ -200,6 +279,14 @@
                     </select>
                 </div>
                 <div class="filter-item filter-item-compact">
+                    <label class="form-label" for="junior_race">Junior</label>
+                    <select id="junior_race" name="junior_race" class="form-select">
+                        <option value="" {% if not selected_filters.junior_race %}selected{% endif %}>All</option>
+                        <option value="true" {% if selected_filters.junior_race == 'true' %}selected{% endif %}>Yes</option>
+                        <option value="false" {% if selected_filters.junior_race == 'false' %}selected{% endif %}>No</option>
+                    </select>
+                </div>
+                <div class="filter-item filter-item-compact">
                     <label class="form-label" for="has_time_trial">Time Trials</label>
                     <select id="has_time_trial" name="has_time_trial" class="form-select">
                         <option value="" {% if not selected_filters.has_time_trial %}selected{% endif %}>All</option>
@@ -253,19 +340,20 @@
 
         {% if races %}
         <div class="table-wrapper">
-            <table class="table table-sm table-hover align-middle mb-0 race-results-table">
+            <table class="table table-sm table-hover align-middle mb-0 race-results-table" data-total-races="{{ total_race_count }}" data-current-limit="{{ race_page_limit if server_paginated_races else 100 }}" data-server-paginated="{{ 'true' if server_paginated_races else 'false' }}">
                 <thead>
                     <tr>
                         <th style="width: 112px;">Status</th>
                         <th style="width: 78px;" class="sortable-col" data-sort-type="number">Stages</th>
+                        <th class="sortable-col" data-sort-type="date" style="width: 112px;">Start Date</th>
+                        <th class="sortable-col" data-sort-type="date" style="width: 112px;">End Date</th>
+                        <th class="sortable-col" data-sort-type="text" style="width: 58px;">Profile</th>
+                        <th class="sortable-col" data-sort-type="text" style="width: 72px;">TT</th>
                         <th class="sortable-col" data-sort-type="text" style="width: 450px;">Name</th>
                         <th class="sortable-col" data-sort-type="text" style="width: 180px;">Winner</th>
                         <th class="sortable-col" data-sort-type="text" style="width: 68px;">Cat.</th>
-                        <th class="sortable-col" data-sort-type="text" style="width: 180px;">Profile</th>
-                        <th class="sortable-col" data-sort-type="text" style="width: 72px;">TT</th>
+                        <th class="sortable-col" data-sort-type="text" style="width: 58px;">Jr.</th>
                         <th class="sortable-col" data-sort-type="number" style="width: 58px;">KM</th>
-                        <th class="sortable-col" data-sort-type="date" style="width: 112px;">Start Date</th>
-                        <th class="sortable-col" data-sort-type="date" style="width: 112px;">End Date</th>
                         <th class="sortable-col" data-sort-type="text" style="width: 120px;">Nation</th>
                     </tr>
                 </thead>
@@ -293,27 +381,33 @@
                                 ({{ stage_rows|length }})
                             </button>
                             {% elif race.is_pcs|default(false) and race.is_multi_day|default(false) %}
-                            <button type="button" class="btn btn-sm btn-outline-secondary toggle-btn" data-race-id="{{ race.id }}" data-stage-count="{{ pcs_stage_count }}" data-stage-load-url="{{ url_for('web.stats_editor_pcs_race_stages', pcs_race_id=race.pcs_race_id) }}" data-stage-detail-url="{{ url_for('web.stats_editor_race_detail_by_source', source='pcs', race_id=race.pcs_race_id) }}" data-itt-toggle-url="{{ url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=race.pcs_race_id) }}" title="Expand race stages">{{ '(' ~ pcs_stage_count ~ ')' if pcs_stage_count else '…' }}</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary toggle-btn" data-race-id="{{ race.id }}" data-stage-count="{{ pcs_stage_count }}" data-stage-load-url="{{ url_for('web.stats_editor_pcs_race_stages', pcs_race_id=race.pcs_race_id) }}" data-stage-detail-url="{{ url_for('web.stats_editor_race_detail_by_source', source='pcs', race_id=race.pcs_race_id) }}" data-itt-toggle-url="{{ url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=race.pcs_race_id) }}" data-profile-toggle-url="{{ url_for('web.stats_editor_cycle_pcs_profile', pcs_race_id=race.pcs_race_id) }}" title="Expand race stages">{{ '(' ~ pcs_stage_count ~ ')' if pcs_stage_count else '…' }}</button>
                             {% else %}
                             -
                             {% endif %}
+                        </td>
+                        <td data-sort-value="{{ race.start_date.isoformat() if race.start_date else '' }}">{{ race.start_date or '-' }}</td>
+                        <td data-sort-value="{{ race.end_date.isoformat() if race.end_date else '' }}">{{ (race.end_date or '-') if race.end_date and race.start_date and race.end_date > race.start_date else '' }}</td>
+                        <td class="text-center" data-sort-value="{{ (race.table_profile or '-')|lower }}" title="{{ race.table_profile or 'Unknown profile' }}">
+                            {% if race.is_multi_day|default(false) %}-
+                            {% elif race.is_pcs|default(false) and race.can_edit_profile|default(false) %}<button type="button" class="race-profile-toggle" data-profile="{{ race.parcours_type or '' }}" data-url="{{ url_for('web.stats_editor_cycle_pcs_profile', pcs_race_id=race.pcs_race_id) }}" data-csrf-token="{{ csrf_token() }}" aria-label="Change profile for {{ race.name }}" title="{{ race.parcours_type or 'Unknown profile' }}">{{ profile_icon(race.parcours_type) }}</button>
+                            {% else %}{{ profile_icon(race.table_profile) }}{% endif %}
+                        </td>
+                        <td class="text-center" data-sort-value="{% if race.time_trial_type == 'ITT' %}2{% elif race.time_trial_type == 'TTT' %}1{% elif race.pcs_overall_cached|default(false) %}0{% endif %}">
+                            {% if race.is_multi_day|default(false) %}
+                            {% elif pcs_tt_column_available and race.pcs_overall_cached|default(false) %}<button type="button" class="pcs-itt-toggle" aria-pressed="{{ 'true' if race.time_trial_type == 'ITT' else 'false' }}" data-is-itt="{{ 'true' if race.time_trial_type == 'ITT' else 'false' }}" data-url="{{ url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=race.pcs_race_id) }}" data-stage-key="overall" data-csrf-token="{{ csrf_token() }}" aria-label="Toggle individual time trial for {{ race.name }}" title="{{ 'Individual time trial' if race.time_trial_type == 'ITT' else 'Not a time trial' }}"><img src="{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}" alt=""></button>
+                            {% else %}-{% endif %}
                         </td>
                         <td class="race-name-cell" data-sort-value="{{ (race.name or '')|lower }}">
                             <span class="race-flag-slot">{% if (race_flag_map|default({})).get(race.id) %}<img class="race-nation-flag" src="{{ url_for('web.nation_flag', code=(race_flag_map|default({})).get(race.id)) }}" width="24" height="24" alt="{{ race.nation_name }} flag" title="{{ race.nation_name }}" loading="lazy">{% endif %}</span>
                             <a href="{{ url_for('web.stats_editor_race_detail_by_source', source='pcs', race_id=race.pcs_race_id) }}">{{ race.name or '-' }}</a>
                         </td>
-                        <td class="winner-cell" title="{{ race.winner_name or '-' }}">{{ race.winner_name or '-' }}</td>
-                        <td data-sort-value="{{ (race.classification or '-')|lower }}">{{ race.classification or '-' }}</td>
-                        <td data-sort-value="{{ (race.table_profile or '-')|lower }}" title="{{ race.table_profile or '-' }}">{{ race.table_profile or '-' }}</td>
-                        <td class="text-center" data-sort-value="{% if race.time_trial_type == 'ITT' %}2{% elif race.time_trial_type == 'TTT' %}1{% elif race.pcs_overall_cached|default(false) %}0{% endif %}">
-                            {% if race.is_multi_day|default(false) %}
-                            {% elif race.time_trial_type == 'TTT' %}<span title="Team time trial">TTT</span>
-                            {% elif pcs_tt_column_available and race.pcs_overall_cached|default(false) %}<input type="checkbox" class="form-check-input pcs-itt-toggle" {% if race.time_trial_type == 'ITT' %}checked{% endif %} data-url="{{ url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=race.pcs_race_id) }}" data-stage-key="overall" data-csrf-token="{{ csrf_token() }}" aria-label="Mark {{ race.name }} as an individual time trial" title="Individual time trial">
-                            {% else %}-{% endif %}
+                        <td class="winner-cell" title="{{ race.winner_name or '-' }}">
+                            {% if race.winner_url %}<a href="{{ race.winner_url }}" class="winner-link {{ 'winner-link-known' if race.winner_in_cdb else 'winner-link-external' }}">{{ race.winner_name or '-' }}</a>{% else %}{{ race.winner_name or '-' }}{% endif %}
                         </td>
-                        <td data-sort-value="{{ race.table_distance if race.table_distance is not none else '' }}">{{ race.table_distance if race.table_distance is not none else '-' }}</td>
-                        <td data-sort-value="{{ race.start_date.isoformat() if race.start_date else '' }}">{{ race.start_date or '-' }}</td>
-                        <td data-sort-value="{{ race.end_date.isoformat() if race.end_date else '' }}">{{ (race.end_date or '-') if race.end_date and race.start_date and race.end_date > race.start_date else '' }}</td>
+                        <td data-sort-value="{{ (race.classification or '-')|lower }}">{{ race.classification or '-' }}</td>
+                        <td data-sort-value="{{ 'JR' if race.is_junior_race|default(false) else 'MU/ME' }}">{{ 'JR' if race.is_junior_race|default(false) else 'MU/ME' }}</td>
+                        <td data-sort-value="{{ race.table_distance if race.table_distance is not none else '' }}">{{ '%.1f'|format(race.table_distance|float) if race.table_distance is not none else '-' }}</td>
                         <td data-sort-value="{{ (race.nation_name or '')|lower }}">{{ race.nation_name or '-' }}</td>
                     </tr>
 
@@ -332,19 +426,21 @@
                             {% endif %}
                         </td>
                         <td class="text-end">↳</td>
-                        <td class="race-name-cell">
-                            Stage {{ stage.stage_number or '?' }} - {{ stage.stage_start_location or '-' }} to {{ stage.stage_end_location or '-' }}
-                        </td>
-                        <td class="winner-cell" title="{{ stage_winner or '-' }}">{{ stage_winner or '-' }}</td>
-                        <td>-</td>
-                        <td>{% if stage.parcours_type and stage.parcours_type|string|lower != 'none' %}{{ stage.parcours_type }}{% else %}-{% endif %}</td>
-                        <td class="text-center">
-                            {% if pcs_tt_column_available and race.is_pcs|default(false) and stage.is_cached %}<input type="checkbox" class="form-check-input pcs-itt-toggle" {% if stage.time_trial_type == 'ITT' %}checked{% endif %} {% if stage.time_trial_type == 'TTT' %}disabled{% endif %} data-url="{{ url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=race.pcs_race_id) }}" data-stage-key="stage:{{ stage.stage_number }}" data-csrf-token="{{ csrf_token() }}" aria-label="Mark stage {{ stage.stage_number }} as an individual time trial" title="{{ 'Team time trial; not an individual time trial' if stage.time_trial_type == 'TTT' else 'Individual time trial' }}">
-                            {% else %}-{% endif %}
-                        </td>
-                        <td>{{ stage.stage_distance_km if stage.stage_distance_km is not none else '-' }}</td>
                         <td>{{ stage.stage_date or '-' }}</td>
                         <td>-</td>
+                        <td class="text-center" data-sort-value="{{ (stage.parcours_type or '-')|lower }}" title="{{ stage.parcours_type or 'Unknown profile' }}">
+                            {% if race.is_pcs|default(false) and can_update_profile and stage.is_cached %}<button type="button" class="race-profile-toggle" data-profile="{{ stage.parcours_type or '' }}" data-stage-key="stage:{{ stage.stage_number }}" data-url="{{ url_for('web.stats_editor_cycle_pcs_profile', pcs_race_id=race.pcs_race_id) }}" data-csrf-token="{{ csrf_token() }}" aria-label="Change profile for stage {{ stage.stage_number }}" title="{{ stage.parcours_type or 'Unknown profile' }}">{{ profile_icon(stage.parcours_type) }}</button>
+                            {% else %}{{ profile_icon(stage.parcours_type) }}{% endif %}
+                        </td>
+                        <td class="text-center">
+                            {% if pcs_tt_column_available and race.is_pcs|default(false) and stage.is_cached %}<button type="button" class="pcs-itt-toggle" aria-pressed="{{ 'true' if stage.time_trial_type == 'ITT' else 'false' }}" data-is-itt="{{ 'true' if stage.time_trial_type == 'ITT' else 'false' }}" data-url="{{ url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=race.pcs_race_id) }}" data-stage-key="stage:{{ stage.stage_number }}" data-csrf-token="{{ csrf_token() }}" aria-label="Toggle time trial for stage {{ stage.stage_number }}" title="{{ 'Individual time trial' if stage.time_trial_type == 'ITT' else 'Not a time trial' }}"><img src="{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}" alt=""></button>
+                            {% else %}-{% endif %}
+                        </td>
+                        <td class="race-name-cell">Stage {{ stage.stage_number or '?' }} - {{ stage.stage_start_location or '-' }} to {{ stage.stage_end_location or '-' }}</td>
+                        <td class="winner-cell" title="{{ stage_winner or '-' }}">{{ stage_winner or '-' }}</td>
+                        <td>-</td>
+                        <td>-</td>
+                        <td>{{ '%.1f'|format(stage.stage_distance_km|float) if stage.stage_distance_km is not none else '-' }}</td>
                         <td>-</td>
                     </tr>
                     {% endfor %}
@@ -354,7 +450,7 @@
             </table>
         </div>
         {% if (server_paginated_races and total_race_count > races|length) or (not server_paginated_races and races|length > 100) %}
-        <div class="d-flex justify-content-between align-items-center mt-3" id="race-table-controls" data-total-races="{{ total_race_count }}" data-server-paginated="{{ 'true' if server_paginated_races else 'false' }}">
+        <div class="d-flex justify-content-between align-items-center mt-3" id="race-table-controls" data-total-races="{{ total_race_count }}" data-current-limit="{{ race_page_limit if server_paginated_races else 100 }}" data-server-paginated="{{ 'true' if server_paginated_races else 'false' }}">
             <span class="text-muted" id="race-table-count">Showing {{ races|length if server_paginated_races else [100, races|length]|min }} of {{ total_race_count }} races</span>
             {% if server_paginated_races %}
             <a class="btn btn-outline-secondary" id="more-races" href="{{ url_for('web.stats_editor', race_limit=race_page_limit + 100) }}">More</a>
@@ -449,25 +545,113 @@
 {% block scripts %}
 <script>
 async function saveIttToggle() {
-    const checkbox = this;
-    checkbox.disabled = true;
+    const toggle = this;
+    const previousValue = toggle.dataset.isItt === 'true';
+    const nextValue = !previousValue;
+    toggle.dataset.isItt = String(nextValue);
+    toggle.setAttribute('aria-pressed', String(nextValue));
+    toggle.disabled = true;
     try {
         const body = new URLSearchParams({
-            csrf_token: checkbox.dataset.csrfToken,
-            stage_key: checkbox.dataset.stageKey,
-            is_itt: checkbox.checked ? 'true' : 'false',
+            csrf_token: toggle.dataset.csrfToken,
+            stage_key: toggle.dataset.stageKey,
+            is_itt: nextValue ? 'true' : 'false',
         });
-        const response = await fetch(checkbox.dataset.url, {
+        const response = await fetch(toggle.dataset.url, {
             method: 'POST', credentials: 'same-origin',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: body.toString(),
         });
         if (!response.ok) throw new Error('Could not save ITT flag');
+        const cell = toggle.closest('td');
+        if (cell) cell.dataset.sortValue = nextValue ? '2' : '0';
+        toggle.title = nextValue ? 'Individual time trial' : 'Not a time trial';
     } catch (error) {
-        checkbox.checked = !checkbox.checked;
-        checkbox.title = 'Could not save. Please try again.';
+        toggle.dataset.isItt = String(previousValue);
+        toggle.setAttribute('aria-pressed', String(previousValue));
+        toggle.title = 'Could not save. Please try again.';
     } finally {
-        checkbox.disabled = false;
+        toggle.disabled = false;
+    }
+}
+
+const PCS_RACE_PROFILES = [
+    { value: 'Flat', icon: 'Icon_FLA.webp' },
+    { value: 'Hills, flat finish', icon: 'Icon_HIL.webp' },
+    { value: 'Hills, uphill finish', icon: 'Icon_HILa.webp' },
+    { value: 'Mountains, flat finish', icon: 'Icon_MTN.webp' },
+    { value: 'Mountains, uphill finish', icon: 'Icon_MTNa.webp' },
+];
+const PCS_PROFILE_ICONS = {
+    'flat': "{{ url_for('static', filename='images/race-profiles/Icon_FLA.webp') }}",
+    'hills, flat finish': "{{ url_for('static', filename='images/race-profiles/Icon_HIL.webp') }}",
+    'hills, uphill finish': "{{ url_for('static', filename='images/race-profiles/Icon_HILa.webp') }}",
+    'mountains, flat finish': "{{ url_for('static', filename='images/race-profiles/Icon_MTN.webp') }}",
+    'mountains, uphill finish': "{{ url_for('static', filename='images/race-profiles/Icon_MTNa.webp') }}",
+};
+const PCS_UNKNOWN_PROFILE_ICON = "{{ url_for('static', filename='images/race-profiles/Icon_no.webp') }}";
+
+function formatStageDate(value) {
+    const raw = String(value || '').trim();
+    if (!raw) return '-';
+    const iso = raw.match(/^(\d{4})-(\d{1,2})-(\d{1,2})/);
+    if (iso) return `${iso[1]}-${iso[2].padStart(2, '0')}-${iso[3].padStart(2, '0')}`;
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) return raw;
+    return `${parsed.getFullYear()}-${String(parsed.getMonth() + 1).padStart(2, '0')}-${String(parsed.getDate()).padStart(2, '0')}`;
+}
+
+function updateProfileToggle(toggle, profile) {
+    const normalized = (profile || '').trim().toLocaleLowerCase();
+    const iconSource = PCS_PROFILE_ICONS[normalized] || PCS_UNKNOWN_PROFILE_ICON;
+    const image = toggle.querySelector('img');
+    image.src = iconSource;
+    image.alt = profile || 'Unknown profile';
+    image.title = profile || 'Unknown profile';
+    image.classList.toggle('profile-icon-unknown', !profile);
+    toggle.dataset.profile = profile || '';
+    toggle.title = profile || 'Unknown profile';
+    toggle.setAttribute('aria-label', `Change profile: ${profile || 'Unknown profile'}`);
+    const cell = toggle.closest('td');
+    if (cell) {
+        cell.dataset.sortValue = normalized || '-';
+        cell.title = profile || 'Unknown profile';
+    }
+}
+
+async function cycleRaceProfile() {
+    const toggle = this;
+    const current = (toggle.dataset.profile || '').trim().toLocaleLowerCase();
+    const currentIndex = PCS_RACE_PROFILES.findIndex(
+        profile => profile.value.toLocaleLowerCase() === current,
+    );
+    const nextProfile = currentIndex < 0
+        ? PCS_RACE_PROFILES[0].value
+        : (currentIndex === PCS_RACE_PROFILES.length - 1
+            ? ''
+            : PCS_RACE_PROFILES[currentIndex + 1].value);
+    const previousProfile = toggle.dataset.profile || '';
+    toggle.disabled = true;
+    updateProfileToggle(toggle, nextProfile);
+    try {
+        const body = new URLSearchParams({
+            csrf_token: toggle.dataset.csrfToken,
+            parcours_type: nextProfile,
+            stage_key: toggle.dataset.stageKey || 'overall',
+        });
+        const response = await fetch(toggle.dataset.url, {
+            method: 'POST', credentials: 'same-origin',
+            headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+            body: body.toString(),
+        });
+        if (!response.ok) throw new Error('Could not save race profile');
+        const result = await response.json();
+        updateProfileToggle(toggle, result.parcours_type || '');
+    } catch (error) {
+        updateProfileToggle(toggle, previousProfile);
+        toggle.title = 'Could not save. Please try again.';
+    } finally {
+        toggle.disabled = false;
     }
 }
 
@@ -520,6 +704,65 @@ async function toggleStages(raceId, button) {
                 arrowCell.className = 'text-end';
                 arrowCell.textContent = '↳';
                 row.appendChild(arrowCell);
+                const endDateCell = document.createElement('td');
+                const startDateCell = document.createElement('td');
+                startDateCell.textContent = formatStageDate(stage.stage_date);
+                row.appendChild(startDateCell);
+                endDateCell.textContent = '-';
+                row.appendChild(endDateCell);
+                const profileCell = document.createElement('td');
+                profileCell.className = 'text-center';
+                const profile = String(stage.parcours_type || '').trim();
+                const profileKey = profile.toLowerCase();
+                const profileUnknown = !profile || ['none', 'null', '-'].includes(profileKey);
+                profileCell.dataset.sortValue = profileKey || '-';
+                profileCell.title = profileUnknown ? 'Unknown profile' : profile;
+                const profileIcon = document.createElement('img');
+                profileIcon.src = PCS_PROFILE_ICONS[profileKey] || PCS_UNKNOWN_PROFILE_ICON;
+                profileIcon.alt = profileUnknown ? 'Unknown profile' : profile;
+                profileIcon.title = profileUnknown ? 'Unknown profile' : profile;
+                profileIcon.loading = 'lazy';
+                profileIcon.referrerPolicy = 'no-referrer';
+                profileIcon.className = `race-profile-icon${profileUnknown ? ' profile-icon-unknown' : ''}`;
+                if (stage.is_cached && stage.can_edit_profile) {
+                    const profileToggle = document.createElement('button');
+                    profileToggle.type = 'button';
+                    profileToggle.className = 'race-profile-toggle';
+                    profileToggle.dataset.profile = profileUnknown ? '' : profile;
+                    profileToggle.dataset.stageKey = `stage:${stage.stage_number}`;
+                    profileToggle.dataset.url = button.dataset.profileToggleUrl;
+                    profileToggle.dataset.csrfToken = document.querySelector('input[name="csrf_token"]')?.value || '';
+                    profileToggle.setAttribute('aria-label', `Change profile for stage ${stage.stage_number}`);
+                    profileToggle.title = profileUnknown ? 'Unknown profile' : profile;
+                    profileToggle.appendChild(profileIcon);
+                    profileToggle.addEventListener('click', cycleRaceProfile);
+                    profileCell.appendChild(profileToggle);
+                } else {
+                    profileCell.appendChild(profileIcon);
+                }
+                row.appendChild(profileCell);
+                const ttCell = document.createElement('td');
+                ttCell.className = 'text-center';
+                ttCell.dataset.sortValue = stage.time_trial_type === 'ITT' ? '2' : (stage.time_trial_type === 'TTT' ? '1' : '0');
+                if (stage.is_cached && stage.can_toggle_itt) {
+                    const toggle = document.createElement('button');
+                    toggle.type = 'button';
+                    toggle.className = 'pcs-itt-toggle';
+                    toggle.dataset.isItt = String(stage.time_trial_type === 'ITT');
+                    toggle.setAttribute('aria-pressed', String(stage.time_trial_type === 'ITT'));
+                    toggle.dataset.url = button.dataset.ittToggleUrl;
+                    toggle.dataset.stageKey = `stage:${stage.stage_number}`;
+                    toggle.dataset.csrfToken = document.querySelector('input[name="csrf_token"]')?.value || '';
+                    toggle.setAttribute('aria-label', `Toggle time trial for stage ${stage.stage_number}`);
+                    toggle.title = stage.time_trial_type === 'ITT' ? 'Individual time trial' : 'Not a time trial';
+                    const icon = document.createElement('img');
+                    icon.src = "{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}";
+                    icon.alt = '';
+                    toggle.appendChild(icon);
+                    toggle.addEventListener('click', saveIttToggle);
+                    ttCell.appendChild(toggle);
+                }
+                row.appendChild(ttCell);
                 const nameCell = document.createElement('td');
                 nameCell.className = 'race-name-cell';
                 const link = document.createElement('a');
@@ -529,43 +772,24 @@ async function toggleStages(raceId, button) {
                 link.textContent = stage.name || `Stage ${stage.stage_number}`;
                 nameCell.appendChild(link);
                 row.appendChild(nameCell);
-                const ttCell = document.createElement('td');
-                ttCell.className = 'text-center';
-                ttCell.dataset.sortValue = stage.time_trial_type === 'ITT' ? '2' : (stage.time_trial_type === 'TTT' ? '1' : '0');
-                if (stage.is_cached && stage.can_toggle_itt) {
-                    const checkbox = document.createElement('input');
-                    checkbox.type = 'checkbox';
-                    checkbox.className = 'form-check-input pcs-itt-toggle';
-                    checkbox.checked = stage.time_trial_type === 'ITT';
-                    checkbox.disabled = stage.time_trial_type === 'TTT';
-                    checkbox.dataset.url = button.dataset.ittToggleUrl;
-                    checkbox.dataset.stageKey = `stage:${stage.stage_number}`;
-                    checkbox.dataset.csrfToken = document.querySelector('input[name="csrf_token"]')?.value || '';
-                    checkbox.setAttribute('aria-label', `Mark stage ${stage.stage_number} as an individual time trial`);
-                    checkbox.title = stage.time_trial_type === 'TTT'
-                        ? 'Team time trial; not an individual time trial'
-                        : 'Individual time trial';
-                    checkbox.addEventListener('change', saveIttToggle);
-                    ttCell.appendChild(checkbox);
+                const winnerCell = document.createElement('td');
+                winnerCell.className = 'winner-cell';
+                winnerCell.title = stage.winner_name || '-';
+                if (stage.winner_url) {
+                    const winnerLink = document.createElement('a');
+                    winnerLink.href = stage.winner_url;
+                    winnerLink.className = `winner-link ${stage.winner_in_cdb ? 'winner-link-known' : 'winner-link-external'}`;
+                    winnerLink.textContent = stage.winner_name || '-';
+                    winnerCell.appendChild(winnerLink);
+                } else {
+                    winnerCell.textContent = stage.winner_name || '-';
                 }
+                row.appendChild(winnerCell);
+                const categoryCell = document.createElement('td');
+                categoryCell.textContent = '-';
+                row.appendChild(categoryCell);
                 [
-                    stage.winner_name || '-',
-                    '-',
-                    (stage.parcours_type && String(stage.parcours_type).toLowerCase() !== 'none') ? stage.parcours_type : '-',
-                ].forEach((value, index) => {
-                    const cell = document.createElement('td');
-                    cell.textContent = value;
-                    if (index === 0) {
-                        cell.className = 'winner-cell';
-                        cell.title = value;
-                    }
-                    row.appendChild(cell);
-                });
-                row.appendChild(ttCell);
-                [
-                    stage.distance_km != null ? stage.distance_km : '-',
-                    stage.stage_date || '-',
-                    '-',
+                    stage.distance_km != null ? Number(stage.distance_km).toFixed(1) : '-',
                     '-',
                 ].forEach((value, index) => {
                     const cell = document.createElement('td');
@@ -603,14 +827,23 @@ async function toggleStages(raceId, button) {
     const isHidden = loadedRows[0].style.display === 'none';
     loadedRows.forEach(row => {
         row.style.display = isHidden ? 'table-row' : 'none';
+        row.classList.remove('expanded-race-end');
     });
 
+    const raceRow = button.closest('tr');
+    raceRow?.classList.toggle('expanded-race', isHidden);
+    if (isHidden) {
+        loadedRows[loadedRows.length - 1].classList.add('expanded-race-end');
+    }
     button.classList.toggle('expanded', isHidden);
 }
 
 document.addEventListener('DOMContentLoaded', function () {
-    document.querySelectorAll('.pcs-itt-toggle').forEach(function (checkbox) {
-        checkbox.addEventListener('change', saveIttToggle);
+    document.querySelectorAll('.race-profile-toggle').forEach(function (toggle) {
+        toggle.addEventListener('click', cycleRaceProfile);
+    });
+    document.querySelectorAll('.pcs-itt-toggle[data-url]').forEach(function (toggle) {
+        toggle.addEventListener('click', saveIttToggle);
     });
     const filtersForm = document.getElementById('race-filters-form');
     if (filtersForm) {
@@ -682,7 +915,7 @@ document.addEventListener('DOMContentLoaded', function () {
             filterTimer = setTimeout(applyFilters, 500);
         });
         document.getElementById('reset-race-filters').addEventListener('click', function () {
-            ['race_name', 'classification', 'nation', 'is_stage_race', 'has_time_trial'].forEach(function (name) {
+            ['race_name', 'classification', 'nation', 'is_stage_race', 'junior_race', 'has_time_trial'].forEach(function (name) {
                 filtersForm.elements.namedItem(name).value = '';
             });
             filtersForm.querySelectorAll('input[name="edit_status"]').forEach(function (field) {
@@ -764,11 +997,11 @@ document.addEventListener('DOMContentLoaded', function () {
     const raceTableControls = document.getElementById('race-table-controls');
     const moreRacesButton = document.getElementById('more-races');
     const raceTableCount = document.getElementById('race-table-count');
-    const totalRaceCount = raceTableControls ? Number(raceTableControls.dataset.totalRaces) : 0;
-    const serverPaginatedRaces = Boolean(
-        raceTableControls && raceTableControls.dataset.serverPaginated === 'true'
-    );
-    let visibleRaceLimit = 100;
+    const totalRaceCount = Number(raceResultsTable.dataset.totalRaces || 0);
+    const serverPaginatedRaces = raceResultsTable.dataset.serverPaginated === 'true';
+    let visibleRaceLimit = serverPaginatedRaces
+        ? Number(raceResultsTable.dataset.currentLimit)
+        : 100;
     const sortState = {
         columnIndex: null,
         direction: 'asc',
@@ -865,20 +1098,53 @@ document.addEventListener('DOMContentLoaded', function () {
         }
     }
 
-    if (moreRacesButton && !serverPaginatedRaces) {
-        moreRacesButton.addEventListener('click', function () {
-            visibleRaceLimit = visibleRaceLimit === 100 ? 500 : totalRaceCount;
+    function nextRaceLimit(currentLimit) {
+        if (currentLimit < 200) return Math.min(200, totalRaceCount);
+        if (currentLimit < 1000) return Math.min(1000, totalRaceCount);
+        return totalRaceCount;
+    }
+
+    const raceTableStateKey = 'worlddb-stats-editor-race-table-state';
+    function raceTableFilterKey(url) {
+        const params = new URLSearchParams(url.search);
+        params.delete('race_limit');
+        return url.pathname + '?' + params.toString();
+    }
+
+    if (moreRacesButton) {
+        moreRacesButton.addEventListener('click', function (event) {
+            const currentLimit = serverPaginatedRaces
+                ? Number(raceResultsTable.dataset.currentLimit)
+                : visibleRaceLimit;
+            const nextLimit = nextRaceLimit(currentLimit);
+            if (serverPaginatedRaces) {
+                event.preventDefault();
+                const nextUrl = new URL(window.location.href);
+                nextUrl.searchParams.set('race_limit', String(nextLimit));
+                sessionStorage.setItem(raceTableStateKey, JSON.stringify({
+                    filterKey: raceTableFilterKey(nextUrl),
+                    columnIndex: sortState.columnIndex,
+                    direction: sortState.direction,
+                    scrollY: window.scrollY,
+                }));
+                window.location.assign(nextUrl.toString());
+                return;
+            }
+            visibleRaceLimit = nextLimit;
             applyRaceLimit();
         });
+    }
+
+    if (!serverPaginatedRaces) {
         applyRaceLimit();
     }
 
-    function sortRaceTableByColumn(header) {
+    function sortRaceTableByColumn(header, directionOverride) {
         const sortType = (header.getAttribute('data-sort-type') || 'text').toLowerCase();
         const columnIndex = header.cellIndex;
-        const nextDirection = (
+        const nextDirection = directionOverride || ((
             sortState.columnIndex === columnIndex && sortState.direction === 'asc'
-        ) ? 'desc' : 'asc';
+        ) ? 'desc' : 'asc');
 
         const groups = collectRaceGroups();
         groups.sort(function (groupA, groupB) {
@@ -920,6 +1186,25 @@ document.addEventListener('DOMContentLoaded', function () {
             sortRaceTableByColumn(header);
         });
     });
+
+    if (serverPaginatedRaces) {
+        try {
+            const savedState = JSON.parse(sessionStorage.getItem(raceTableStateKey) || 'null');
+            const currentUrl = new URL(window.location.href);
+            if (savedState && savedState.filterKey === raceTableFilterKey(currentUrl)) {
+                sessionStorage.removeItem(raceTableStateKey);
+                const savedHeader = sortableHeaders[savedState.columnIndex];
+                if (savedHeader && ['asc', 'desc'].includes(savedState.direction)) {
+                    sortRaceTableByColumn(savedHeader, savedState.direction);
+                }
+                window.requestAnimationFrame(function () {
+                    window.scrollTo(0, Number(savedState.scrollY) || 0);
+                });
+            }
+        } catch (error) {
+            sessionStorage.removeItem(raceTableStateKey);
+        }
+    }
 });
 </script>
 {% endblock %}

@@ -130,6 +130,7 @@ def build_shared_monitor_view(shared, *, as_of):
             exclusion = 'Participation not confirmed'
         results.append({
             'result_date': row.get('race_date'), 'race_name': row.get('race_name'),
+            'pcs_race_id': row.get('pcs_race_id'), 'stage_key': stage_key,
             'race_category_display': row.get('classification') or '—',
             'stage_number': int(stage_match.group(1)) if stage_match else None,
             'stage_name': None, 'row_type': 'stage_result' if kind == 'stage' else kind,

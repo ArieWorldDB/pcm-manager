@@ -13,12 +13,43 @@ from sqlalchemy import text
 
 from webapp.extensions import db
 from webapp.integrations.pcs.calendar import (
-    CATEGORIES, UCI_CIRCUIT_CODES, sync_national_races, sync_uci_race_calendar,
+    CATEGORIES, UCI_CIRCUIT_CODES, sync_championship_race_calendar,
+    sync_national_races, sync_uci_race_calendar,
 )
 from webapp.integrations.pcs.sync_results import sync_next_race_page
 from webapp.models.main.pcs import PcsRaceCalendar
 
 _LOCK_KEY = 792211104
+
+
+def _result_pages_due_sql(race_alias):
+    """Return a predicate for missing overall data or an empty page due for retry."""
+    def canonical(alias):
+        return (
+            f"regexp_replace(regexp_replace({alias}.pcs_race_path, "
+            "'-([0-9]{4})-re?$', '-\\1', 'i'), "
+            "'-(res(u(l(t)?)?)?|gc)$', '', 'i')"
+        )
+
+    cached_path = canonical('cached')
+    candidate_path = canonical(race_alias)
+    return f"""(
+        NOT EXISTS (
+            SELECT 1 FROM pcs_race_result_pages p
+            JOIN pcs_race_calendar cached ON cached.id = p.pcs_race_id
+            WHERE cached.season_year = {race_alias}.season_year
+              AND {cached_path} = {candidate_path}
+              AND p.stage_key = 'overall'
+        )
+        OR EXISTS (
+            SELECT 1 FROM pcs_race_result_pages p
+            JOIN pcs_race_calendar cached ON cached.id = p.pcs_race_id
+            WHERE cached.season_year = {race_alias}.season_year
+              AND {cached_path} = {candidate_path}
+              AND p.payload->>'_pcs_result_state' = 'no_result_rows'
+              AND p.fetched_at <= NOW() - INTERVAL '1 day'
+        )
+    )"""
 
 
 def _source_requested_stop(exc):
@@ -63,6 +94,12 @@ def uci_backfill_storage_ready():
                AND to_regclass('pcs_sync_jobs') IS NOT NULL
                AND to_regclass('pcs_sync_work_items') IS NOT NULL
                AND to_regclass('pcs_race_calendar_uci_circuits') IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM pg_constraint
+                   WHERE conrelid = to_regclass('pcs_sync_work_items')
+                     AND conname = 'ck_pcs_sync_work_scope'
+                     AND pg_get_constraintdef(oid) LIKE '%championship_calendar%'
+               )
         """)).scalar_one()
 
 
@@ -126,13 +163,27 @@ def create_sync_job(*, job_type, anchor_year, run_date=None):
             items = [
                 {'job_id': job_id, 'work_key': f'uci-calendar:{anchor_year}:{circuit}',
                  'year': anchor_year, 'circuit': circuit}
-                for circuit in UCI_CIRCUIT_CODES
+                for circuit in UCI_CIRCUIT_CODES if circuit != 23
             ]
             connection.execute(text("""
                 INSERT INTO pcs_sync_work_items
                     (job_id, work_key, work_type, season_year, category_code, status)
                 VALUES (:job_id, :work_key, 'uci_calendar', :year, :circuit, 'pending')
             """), items)
+            if connection.execute(text("""
+                SELECT EXISTS (
+                    SELECT 1 FROM pg_constraint
+                    WHERE conrelid = to_regclass('pcs_sync_work_items')
+                      AND conname = 'ck_pcs_sync_work_scope'
+                      AND pg_get_constraintdef(oid) LIKE '%championship_calendar%'
+                )
+            """)).scalar_one():
+                connection.execute(text("""
+                    INSERT INTO pcs_sync_work_items
+                        (job_id, work_key, work_type, season_year, status)
+                    VALUES (:job_id, :work_key, 'championship_calendar', :year, 'pending')
+                """), {'job_id': job_id, 'work_key': f'championship-calendar:{anchor_year}',
+                      'year': anchor_year})
     return job_id
 
 
@@ -147,25 +198,88 @@ def create_uci_backfill_job(*, anchor_year):
                AND to_regclass('pcs_sync_jobs') IS NOT NULL
                AND to_regclass('pcs_sync_work_items') IS NOT NULL
                AND to_regclass('pcs_race_calendar_uci_circuits') IS NOT NULL
+               AND EXISTS (
+                   SELECT 1 FROM pg_constraint
+                   WHERE conrelid = to_regclass('pcs_sync_work_items')
+                     AND conname = 'ck_pcs_sync_work_scope'
+                     AND pg_get_constraintdef(oid) LIKE '%championship_calendar%'
+               )
         """)).scalar_one()
         if not available:
-            raise RuntimeError('PCS UCI calendar and job schemas must be installed first')
+            raise RuntimeError(
+                'PCS UCI calendar and job schemas, including the championship calendar update, '
+                'must be installed first'
+            )
         job_id = connection.execute(text("""
             INSERT INTO pcs_sync_jobs (job_type, anchor_year, status)
             VALUES ('uci_backfill', :anchor_year, 'queued') RETURNING id
         """), {'anchor_year': anchor_year}).scalar_one()
+        # Circuit 23's annual UCI result list is capped at 1,000 rows. Scan its
+        # month/category national lists instead so later-season races are not lost.
+        national_items = [
+            {'job_id': job_id, 'work_key': f'national-calendar:{year}:{month}:{category}',
+             'year': year, 'month': month, 'category': category}
+            for year in (anchor_year, anchor_year - 1, anchor_year - 2)
+            for month in range(1, 13) for category in CATEGORIES
+        ]
+        connection.execute(text("""
+            INSERT INTO pcs_sync_work_items
+                (job_id, work_key, work_type, season_year, month, category_code, status)
+            VALUES (:job_id, :work_key, 'calendar', :year, :month, :category, 'pending')
+        """), national_items)
         items = [
             {'job_id': job_id, 'work_key': f'uci-calendar:{year}:{circuit}',
              'year': year, 'circuit': circuit}
             for year in (anchor_year, anchor_year - 1, anchor_year - 2)
-            for circuit in UCI_CIRCUIT_CODES
+            for circuit in UCI_CIRCUIT_CODES if circuit != 23
         ]
         connection.execute(text("""
             INSERT INTO pcs_sync_work_items
                 (job_id, work_key, work_type, season_year, category_code, status)
             VALUES (:job_id, :work_key, 'uci_calendar', :year, :circuit, 'pending')
         """), items)
+        championship_items = [
+            {'job_id': job_id, 'work_key': f'championship-calendar:{year}', 'year': year}
+            for year in (anchor_year, anchor_year - 1, anchor_year - 2)
+        ]
+        connection.execute(text("""
+            INSERT INTO pcs_sync_work_items (job_id, work_key, work_type, season_year, status)
+            VALUES (:job_id, :work_key, 'championship_calendar', :year, 'pending')
+        """), championship_items)
     return job_id
+
+
+def enqueue_missing_championship_results(job_id):
+    """Add uncached championship race pages to a finished UCI backfill run."""
+    with db.engines['main'].begin() as connection:
+        job = connection.execute(text("""
+            SELECT job_type, status, anchor_year, races_enqueued
+            FROM pcs_sync_jobs WHERE id = :id FOR UPDATE
+        """), {'id': int(job_id)}).mappings().first()
+        if job is None or job['job_type'] != 'uci_backfill' or job['status'] != 'failed':
+            raise ValueError('Select a failed UCI backfill job to continue.')
+        if not job['races_enqueued']:
+            raise ValueError('The UCI backfill has not reached its race-results phase.')
+        open_items = connection.execute(text("""
+            SELECT COUNT(*) FROM pcs_sync_work_items
+            WHERE job_id = :id AND status IN ('pending', 'failed')
+        """), {'id': int(job_id)}).scalar_one()
+        if open_items:
+            raise ValueError('Resolve the existing pending or failed work items first.')
+        result = connection.execute(text(f"""
+            INSERT INTO pcs_sync_work_items
+                (job_id, work_key, work_type, season_year, pcs_race_id, status)
+            SELECT :id, 'race:' || CAST(r.id AS text), 'race', r.season_year, r.id, 'pending'
+            FROM pcs_race_calendar r
+            WHERE r.category_label = 'Championships'
+              AND r.season_year BETWEEN :first_year AND :last_year
+              AND {_result_pages_due_sql('r')}
+            ON CONFLICT (job_id, work_key) DO NOTHING
+        """), {
+            'id': int(job_id), 'first_year': job['anchor_year'] - 2,
+            'last_year': job['anchor_year'],
+        })
+        return max(result.rowcount or 0, 0)
 
 
 def request_sync_pause(job_id):
@@ -375,20 +489,44 @@ def _next_checkpoint(job_id):
         if not job['races_enqueued']:
             first_year = job['anchor_year'] - (2 if job['job_type'] in ('initial', 'uci_backfill') else 0)
             if job['job_type'] == 'uci_backfill':
-                connection.execute(text("""
+                connection.execute(text(f"""
                     INSERT INTO pcs_sync_work_items
                         (job_id, work_key, work_type, season_year, pcs_race_id, status)
-                    SELECT DISTINCT :id, 'race:' || CAST(r.id AS text), 'race', r.season_year, r.id, 'pending'
-                    FROM pcs_race_calendar r
-                    JOIN pcs_race_calendar_uci_circuits u ON u.pcs_race_id = r.id
-                    WHERE r.season_year BETWEEN :first_year AND :last_year
+                    SELECT :id, 'race:' || CAST(r.id AS text), 'race', r.season_year, r.id, 'pending'
+                    FROM (
+                        SELECT DISTINCT ON (r.season_year,
+                            regexp_replace(regexp_replace(r.pcs_race_path, '-([0-9]{4})-re?$', '-\\1', 'i'), '-(res(u(l(t)?)?)?|gc)$', '', 'i'))
+                            r.id, r.season_year, r.pcs_race_path
+                        FROM pcs_race_calendar r
+                        WHERE r.season_year BETWEEN :first_year AND :last_year
+                          AND (EXISTS (
+                              SELECT 1 FROM pcs_race_calendar_uci_circuits u
+                              WHERE u.pcs_race_id = r.id
+                          ) OR r.category_label = 'Championships')
+                          AND {_result_pages_due_sql('r')}
+                        ORDER BY r.season_year,
+                            regexp_replace(regexp_replace(r.pcs_race_path, '-([0-9]{4})-re?$', '-\\1', 'i'), '-(res(u(l(t)?)?)?|gc)$', '', 'i'),
+                            (r.pcs_race_path = regexp_replace(regexp_replace(r.pcs_race_path, '-([0-9]{4})-re?$', '-\\1', 'i'), '-(res(u(l(t)?)?)?|gc)$', '', 'i')) DESC,
+                            r.id
+                    ) r
                     ON CONFLICT (job_id, work_key) DO NOTHING
                 """), {'id': job_id, 'first_year': first_year, 'last_year': job['anchor_year']})
             else:
-                connection.execute(text("""
+                connection.execute(text(f"""
                     INSERT INTO pcs_sync_work_items (job_id, work_key, work_type, season_year, pcs_race_id, status)
-                    SELECT :id, 'race:' || CAST(id AS text), 'race', season_year, id, 'pending'
-                    FROM pcs_race_calendar WHERE season_year BETWEEN :first_year AND :last_year
+                    SELECT :id, 'race:' || CAST(r.id AS text), 'race', r.season_year, r.id, 'pending'
+                    FROM (
+                        SELECT DISTINCT ON (r.season_year,
+                            regexp_replace(regexp_replace(r.pcs_race_path, '-([0-9]{4})-re?$', '-\\1', 'i'), '-(res(u(l(t)?)?)?|gc)$', '', 'i'))
+                            r.id, r.season_year, r.pcs_race_path
+                        FROM pcs_race_calendar r
+                        WHERE r.season_year BETWEEN :first_year AND :last_year
+                          AND {_result_pages_due_sql('r')}
+                        ORDER BY r.season_year,
+                            regexp_replace(regexp_replace(r.pcs_race_path, '-([0-9]{4})-re?$', '-\\1', 'i'), '-(res(u(l(t)?)?)?|gc)$', '', 'i'),
+                            (r.pcs_race_path = regexp_replace(regexp_replace(r.pcs_race_path, '-([0-9]{4})-re?$', '-\\1', 'i'), '-(res(u(l(t)?)?)?|gc)$', '', 'i')) DESC,
+                            r.id
+                    ) r
                     ON CONFLICT (job_id, work_key) DO NOTHING
                 """), {'id': job_id, 'first_year': first_year, 'last_year': job['anchor_year']})
             connection.execute(text("""
@@ -435,6 +573,11 @@ def run_sync_step(job_id, *, now=None):
                 summary = sync_uci_race_calendar(
                     year=item['season_year'], circuit_codes=[item['category_code']], sleep_seconds=0,
                 )
+                if summary['failed']:
+                    raise RuntimeError(summary['errors'][0]['error'])
+                done = True
+            elif item['work_type'] == 'championship_calendar':
+                summary = sync_championship_race_calendar(year=item['season_year'])
                 if summary['failed']:
                     raise RuntimeError(summary['errors'][0]['error'])
                 done = True

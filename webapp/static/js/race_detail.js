@@ -16,7 +16,6 @@ document.addEventListener('DOMContentLoaded', function () {
         const wrapper = document.querySelector('.results-table-wrapper');
         const table = wrapper && wrapper.querySelector('.results-table');
         const originalHead = table && table.querySelector('thead');
-        const statsSection = table && table.closest('#stage-results');
         if (!wrapper || !table || !originalHead) return;
 
         const floatingHeader = document.createElement('div');
@@ -38,7 +37,6 @@ document.addEventListener('DOMContentLoaded', function () {
         function update() {
             const wrapperRect = wrapper.getBoundingClientRect();
             const tableRect = table.getBoundingClientRect();
-            const sectionRect = (statsSection || wrapper).getBoundingClientRect();
             const headHeight = originalHead.getBoundingClientRect().height;
             floatingHeader.style.left = wrapperRect.left - wrapper.scrollLeft + 'px';
             floatingHeader.style.width = wrapper.clientWidth + 'px';
@@ -47,7 +45,7 @@ document.addEventListener('DOMContentLoaded', function () {
             originalCells.forEach(function (cell, index) {
                 if (clonedCells[index]) clonedCells[index].style.width = cell.getBoundingClientRect().width + 'px';
             });
-            const shouldShow = sectionRect.top < 0 && sectionRect.bottom > headHeight && tableRect.bottom > headHeight;
+            const shouldShow = wrapperRect.top < 0 && wrapperRect.bottom > headHeight && tableRect.bottom > headHeight;
             floatingHeader.hidden = !shouldShow;
         }
 
@@ -369,7 +367,7 @@ document.addEventListener('DOMContentLoaded', function () {
                             title.appendChild(icon);
                         }
                     }
-                    [['classification', 'race-classification'], ['nation', 'race-nation'], ['profile', 'race-profile'], ['distance', 'race-distance'], ['startLocation', 'race-from'], ['endLocation', 'race-to'], ['startDate', 'race-start-date']].forEach(function ([key, id]) {
+                    [['classification', 'race-classification'], ['nation', 'race-nation'], ['distance', 'race-distance'], ['startLocation', 'race-from'], ['endLocation', 'race-to'], ['startDate', 'race-start-date']].forEach(function ([key, id]) {
                         const target = document.getElementById(id);
                         if (metadata.dataset[key] && target) target.textContent = metadata.dataset[key];
                     });

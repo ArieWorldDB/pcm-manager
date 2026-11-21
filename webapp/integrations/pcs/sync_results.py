@@ -27,6 +27,7 @@ def sync_next_race_page(race, *, today, now, initial_fill=False, initial_anchor_
         overall = pages.get('overall')
         if (
             overall and race.start_date and race.end_date and race.end_date > race.start_date
+            and (overall.payload or {}).get('_pcs_result_state') != 'no_result_rows'
             and not any(stage.get('stage_number') is not None and not stage.get('is_overall')
                         for stage in (overall.payload or {}).get('stages') or [])
         ):

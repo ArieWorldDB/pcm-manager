@@ -26,6 +26,11 @@ def job_schema(app):
             conn.exec_driver_sql(script)
             uci_path = Path(__file__).resolve().parents[1] / 'migrations/20261115_pcs_uci_backfill.sql'
             conn.exec_driver_sql(uci_path.read_text(encoding='utf-8'))
+            championship_path = (
+                Path(__file__).resolve().parents[1]
+                / 'migrations/20261119_pcs_championship_calendar.sql'
+            )
+            conn.exec_driver_sql(championship_path.read_text(encoding='utf-8'))
         try:
             yield
         finally:
@@ -67,7 +72,7 @@ def test_initial_job_checkpoints_pause_failure_and_resume(app, job_schema, monke
         assert sync_jobs.sync_job_status(job_id)['errors'] == []
 
 
-def test_uci_backfill_creates_27_resumable_calendar_checkpoints(app, job_schema):
+def test_uci_backfill_creates_calendar_checkpoints_for_circuits_and_championships(app, job_schema):
     with app.app_context():
         job_id = sync_jobs.create_uci_backfill_job(anchor_year=2026)
         with db.engines['main'].connect() as connection:
@@ -75,12 +80,16 @@ def test_uci_backfill_creates_27_resumable_calendar_checkpoints(app, job_schema)
                 SELECT work_key, work_type, season_year, category_code
                 FROM pcs_sync_work_items WHERE job_id = :id ORDER BY id
             '''), {'id': job_id}).mappings().all()
-        assert len(rows) == 27
-        assert {row['work_type'] for row in rows} == {'uci_calendar'}
+        assert len(rows) == 30
+        assert {row['work_type'] for row in rows} == {'uci_calendar', 'championship_calendar'}
         assert {row['season_year'] for row in rows} == {2024, 2025, 2026}
-        assert {row['category_code'] for row in rows} == {1, 26, 13, 11, 12, 14, 18, 23, 15}
+        assert {row['category_code'] for row in rows if row['work_type'] == 'uci_calendar'} == {
+            1, 26, 13, 11, 12, 14, 18, 23, 15,
+        }
+        assert all(row['category_code'] is None for row in rows
+                   if row['work_type'] == 'championship_calendar')
         assert rows[0]['work_key'] == 'uci-calendar:2026:1'
-        assert rows[-1]['work_key'] == 'uci-calendar:2024:15'
+        assert rows[-1]['work_key'] == 'championship-calendar:2024'
 
 
 def test_sync_status_summary_groups_errors_and_limits_example_keys(app, monkeypatch):
@@ -133,7 +142,7 @@ def test_sync_status_summary_groups_errors_and_limits_example_keys(app, monkeypa
     ]
 
 
-def test_daily_job_refreshes_uci_calendars_after_initial_fill(app, job_schema):
+def test_daily_job_refreshes_uci_and_championship_calendars_after_initial_fill(app, job_schema):
     with app.app_context():
         initial_id = sync_jobs.create_sync_job(job_type='initial', anchor_year=2026)
         with db.engines['main'].begin() as connection:
@@ -144,10 +153,90 @@ def test_daily_job_refreshes_uci_calendars_after_initial_fill(app, job_schema):
         )
         with db.engines['main'].connect() as connection:
             rows = connection.execute(text('''
-                SELECT season_year, category_code FROM pcs_sync_work_items
+                SELECT work_type, season_year, category_code FROM pcs_sync_work_items
                 WHERE job_id = :id ORDER BY id
             '''), {'id': daily_id}).all()
-        assert rows == [(2026, code) for code in (1, 26, 13, 11, 12, 14, 18, 23, 15)]
+        assert rows == [
+            ('uci_calendar', 2026, code) for code in (1, 26, 13, 11, 12, 14, 18, 23, 15)
+        ] + [('championship_calendar', 2026, None)]
+
+
+def test_championship_checkpoint_fetches_year_specific_calendar(app, job_schema, monkeypatch):
+    with app.app_context():
+        job_id = sync_jobs.create_uci_backfill_job(anchor_year=2026)
+        with db.engines['main'].begin() as connection:
+            connection.execute(text('''
+                UPDATE pcs_sync_work_items SET status = 'done'
+                WHERE job_id = :id AND work_type <> 'championship_calendar'
+            '''), {'id': job_id})
+        calls = []
+        monkeypatch.setattr(sync_jobs, 'sync_championship_race_calendar',
+                            lambda **kwargs: calls.append(kwargs) or {'failed': 0})
+
+        outcome = sync_jobs.run_sync_step(job_id)
+
+        assert outcome['work_key'] == 'championship-calendar:2026'
+        assert calls == [{'year': 2026}]
+
+
+def test_championship_calendar_sync_uses_requested_year_and_persists_rows(
+    app, job_schema, monkeypatch,
+):
+    html = ('<table><tbody><tr><td>2027-09-20</td><td><a '
+            'href="/race/world-championship-itt-2027-result">World Championships ME - ITT</a>'
+            '</td><td>WC</td></tr></tbody></table>')
+    requested = []
+    monkeypatch.setattr(calendar, '_fetch', lambda url: requested.append(url) or html)
+    with app.app_context():
+        summary = calendar.sync_championship_race_calendar(year=2027)
+
+        assert summary == {'requested': 1, 'synced': 1, 'failed': 0, 'races': 1, 'errors': []}
+        assert requested == [
+            'https://www.procyclingstats.com/races.php?'
+            's=championships&year=2027&filter=Filter'
+        ]
+        race = PcsRaceCalendar.query.filter_by(
+            pcs_race_path='/race/world-championship-itt-2027', season_year=2027,
+        ).one()
+        assert race.category_label == 'Championships'
+        assert race.classification is None
+        assert race.name == 'World Championships ME - ITT'
+        db.session.delete(race)
+        db.session.commit()
+
+
+def test_stopped_uci_backfill_can_queue_missing_championship_results(app, job_schema):
+    with app.app_context():
+        races = [
+            PcsRaceCalendar(
+                pcs_race_path=f'/race/world-championship-{year}', season_year=year,
+                category_code=0, category_label='Championships',
+                name=f'World Championships ME {year}',
+                result_url=f'https://www.procyclingstats.com/race/world-championship-{year}',
+            )
+            for year in (2024, 2025, 2026)
+        ]
+        db.session.add_all(races)
+        db.session.commit()
+        job_id = sync_jobs.create_uci_backfill_job(anchor_year=2026)
+        with db.engines['main'].begin() as connection:
+            connection.execute(text("""
+                UPDATE pcs_sync_work_items SET status = 'done' WHERE job_id = :id
+            """), {'id': job_id})
+            connection.execute(text("""
+                UPDATE pcs_sync_jobs SET status = 'failed', races_enqueued = TRUE,
+                    last_error = 'HTTP Error 403: Forbidden' WHERE id = :id
+            """), {'id': job_id})
+
+        assert sync_jobs.enqueue_missing_championship_results(job_id) == 3
+        assert sync_jobs.resume_sync_job(job_id)
+        status = sync_jobs.sync_job_status(job_id)
+        assert status['job']['status'] == 'queued'
+        assert [row['count'] for row in status['counts'] if row['status'] == 'pending'] == [3]
+
+        for race in races:
+            db.session.delete(race)
+        db.session.commit()
 
 
 def test_uci_calendar_phase_only_enqueues_discovered_uci_races(app, job_schema, monkeypatch):
@@ -162,7 +251,13 @@ def test_uci_calendar_phase_only_enqueues_discovered_uci_races(app, job_schema, 
             category_code=1, category_label='Men', name='National test',
             result_url='https://www.procyclingstats.com/race/national-test-2026-result',
         )
-        db.session.add_all([uci_race, national_race])
+        championship_race = PcsRaceCalendar(
+            pcs_race_path='/race/world-championship-test-2026', season_year=2026,
+            category_code=0, category_label='Championships',
+            name='World Championships ME - Road Race',
+            result_url='https://www.procyclingstats.com/race/world-championship-test-2026',
+        )
+        db.session.add_all([uci_race, national_race, championship_race])
         db.session.commit()
         try:
             with db.engines['main'].begin() as connection:
@@ -188,10 +283,69 @@ def test_uci_calendar_phase_only_enqueues_discovered_uci_races(app, job_schema, 
                     SELECT pcs_race_id FROM pcs_sync_work_items
                     WHERE job_id = :id AND work_type = 'race'
                 '''), {'id': job_id}).scalars().all()
-            assert enqueued == [uci_race.id]
+            assert set(enqueued) == {uci_race.id, championship_race.id}
         finally:
             db.session.delete(uci_race)
             db.session.delete(national_race)
+            db.session.delete(championship_race)
+            db.session.commit()
+
+
+def test_result_queue_skips_cached_path_aliases_and_enqueues_uncached_alias_once(app, job_schema):
+    with app.app_context():
+        cached_alias = PcsRaceCalendar(
+            pcs_race_path='/race/cached-alias-2026-result', season_year=2026,
+            category_code=1, category_label='Men', name='Cached alias',
+            result_url='https://www.procyclingstats.com/race/cached-alias-2026-result',
+        )
+        cached_canonical = PcsRaceCalendar(
+            pcs_race_path='/race/cached-alias-2026', season_year=2026,
+            category_code=1, category_label='Men', name='Cached alias',
+            result_url='https://www.procyclingstats.com/race/cached-alias-2026',
+        )
+        uncached_alias = PcsRaceCalendar(
+            pcs_race_path='/race/uncached-alias-2026-result', season_year=2026,
+            category_code=1, category_label='Men', name='Uncached alias',
+            result_url='https://www.procyclingstats.com/race/uncached-alias-2026-result',
+        )
+        uncached_canonical = PcsRaceCalendar(
+            pcs_race_path='/race/uncached-alias-2026', season_year=2026,
+            category_code=1, category_label='Men', name='Uncached alias',
+            result_url='https://www.procyclingstats.com/race/uncached-alias-2026',
+        )
+        db.session.add_all([cached_alias, cached_canonical, uncached_alias, uncached_canonical])
+        db.session.flush()
+        db.session.add(PcsRaceResultPage(
+            pcs_race_id=cached_alias.id, stage_key='overall',
+            source_url=cached_alias.result_url, payload={'rows': []},
+        ))
+        db.session.commit()
+        try:
+            job_id = sync_jobs.create_sync_job(job_type='initial', anchor_year=2026)
+            with db.engines['main'].begin() as connection:
+                connection.execute(text("""
+                    UPDATE pcs_sync_work_items SET status = 'done' WHERE job_id = :id
+                """), {'id': job_id})
+
+            assert sync_jobs._next_checkpoint(job_id)['status'] == 'progress'
+            with db.engines['main'].connect() as connection:
+                queued_ids = set(connection.execute(text("""
+                    SELECT pcs_race_id FROM pcs_sync_work_items
+                    WHERE job_id = :id AND work_type = 'race'
+                      AND pcs_race_id IN (:cached_alias, :cached_canonical,
+                                          :uncached_alias, :uncached_canonical)
+                """), {
+                    'id': job_id, 'cached_alias': cached_alias.id,
+                    'cached_canonical': cached_canonical.id,
+                    'uncached_alias': uncached_alias.id,
+                    'uncached_canonical': uncached_canonical.id,
+                }).scalars())
+
+            assert queued_ids.isdisjoint({cached_alias.id, cached_canonical.id})
+            assert len(queued_ids & {uncached_alias.id, uncached_canonical.id}) == 1
+        finally:
+            for race in (cached_alias, cached_canonical, uncached_alias, uncached_canonical):
+                db.session.delete(race)
             db.session.commit()
 
 
@@ -230,7 +384,7 @@ def test_uci_calendar_sync_persists_race_and_membership(app, job_schema, monkeyp
         assert summary == {'requested': 1, 'synced': 1, 'failed': 0, 'races': 1, 'errors': []}
         assert 'year=2026' in requested[0] and 'circuit=26' in requested[0]
         race = PcsRaceCalendar.query.filter_by(
-            pcs_race_path='/race/classic-example-2026-result', season_year=2026,
+            pcs_race_path='/race/classic-example-2026', season_year=2026,
         ).one()
         membership = db.session.execute(text('''
             SELECT circuit_code FROM pcs_race_calendar_uci_circuits WHERE pcs_race_id = :id
@@ -374,7 +528,7 @@ def test_uci_backfill_can_be_started_through_operator_command(app, job_schema):
     with app.app_context():
         status = sync_jobs.sync_job_status(1)
         assert status['job']['job_type'] == 'uci_backfill'
-        assert sum(item['count'] for item in status['counts']) == 27
+        assert sum(item['count'] for item in status['counts']) == 30
 
 
 def test_uci_backfill_start_is_rejected_while_another_pcs_job_is_open(app, job_schema):

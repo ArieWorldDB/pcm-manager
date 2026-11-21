@@ -811,6 +811,8 @@ def _get_panel_url(panel_name):
     endpoint = panel.get('endpoint')
     if not endpoint:
         return None
+    if panel_name == 'stat_editor':
+        return url_for(endpoint, reset_filters='1')
     return url_for(endpoint)
 
 
@@ -1026,7 +1028,7 @@ def _load_namespace_cyclist_stats(namespace, rider_ids):
         with engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    """
+                    f"""
                     SELECT
                         first_cycling_id,
                         COALESCE(stat_mo, 0) AS stat_mo,
@@ -1138,7 +1140,7 @@ def _load_namespace_scope_snapshots(namespace, race_result_ids=None, stat_list_i
         with engine.connect() as conn:
             rows = conn.execute(
                 text(
-                    """
+                    f"""
                     SELECT
                         cdb_cyclist_id,
                         {_snapshot_stat_select_list(potential_is_scaled=True)}
@@ -1920,6 +1922,7 @@ def _load_namespace_rider_stat_edits(namespace, cdb_cyclist_id):
     edits = []
     race_edit_indexes = {}
     for row in rows:
+        mapped_result = None
         if row.get('stat_list_id') is not None:
             source = {
                 'type': 'Stat List',
@@ -1980,6 +1983,49 @@ def _load_namespace_rider_stat_edits(namespace, cdb_cyclist_id):
         edits.append(edit)
 
     return edits
+
+
+def _load_namespace_pending_rider_stat_edits(namespace, cdb_cyclist_id):
+    """Return the latest unapproved value for each stat from this Namespace."""
+    if namespace is None or cdb_cyclist_id is None:
+        return {}
+
+    engine = create_engine(namespace.build_connection_string())
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text('''
+                SELECT id, stat_name, original_value, final_value, delta_value
+                FROM stat_changes
+                WHERE cdb_cyclist_id = :cdb_cyclist_id
+                  AND COALESCE(is_approved, FALSE) = FALSE
+                ORDER BY id DESC
+            '''), {'cdb_cyclist_id': cdb_cyclist_id}).mappings().all()
+    except Exception:
+        logger.exception(
+            'Failed to load pending stat edits for cyclist %s from namespace %s',
+            cdb_cyclist_id, namespace.slug,
+        )
+        return {}
+    finally:
+        engine.dispose()
+
+    pending = {}
+    for row in rows:
+        stat_name = (row.get('stat_name') or '').strip().lower()
+        stat_code = stat_name[5:] if stat_name.startswith('stat_') else stat_name
+        if stat_code in {'pot', 'potential'}:
+            stat_code = 'potential'
+        elif stat_code not in STAT_DELTA_FIELDS:
+            continue
+        pending.setdefault(stat_code, {
+            'id': row.get('id'),
+            'stat': stat_code,
+            'original_value': row.get('original_value'),
+            'final_value': row.get('final_value'),
+            'delta_value': row.get('delta_value'),
+            'is_approved': False,
+        })
+    return pending
 
 
 def _load_namespace_race_result_deltas(
@@ -2050,6 +2096,21 @@ def _load_namespace_race_result_deltas(
     return delta_map
 
 
+def _stats_export_rider_name(first_name, last_name):
+    first_name = (first_name or '').strip()
+    last_name = (last_name or '').strip()
+    if not first_name or not last_name:
+        return ''
+
+    initials = []
+    for part in first_name.split():
+        if re.fullmatch(r'(?:[^\W\d_]\.){1,4}', part, re.UNICODE) or (len(part) <= 4 and part.endswith('.')):
+            initials.append(part)
+        else:
+            initials.append(f'{part[0].upper()}.')
+    return f'{"".join(initials)} {last_name}'
+
+
 def _race_stat_changes_export(race_name, nation_name, result_rows):
     """Format saved race stat changes for sharing as a Discord-ready text file."""
     flag_code = nationality_flag_code(nation_name)
@@ -2081,16 +2142,13 @@ def _race_stat_changes_export(race_name, nation_name, result_rows):
         if not stat_parts and not potential_part:
             continue
 
+        export_rider_name = (row.get('export_rider_name') or '').strip()
         first_name = (row.get('first_name') or '').strip()
         last_name = (row.get('last_name') or '').strip()
-        if first_name and last_name:
-            initials = []
-            for part in first_name.split():
-                if re.fullmatch(r'(?:[^\W\d_]\.){1,4}', part, re.UNICODE) or (len(part) <= 4 and part.endswith('.')):
-                    initials.append(part)
-                else:
-                    initials.append(f'{part[0].upper()}.')
-            rider_name = f'{"".join(initials)} {last_name}'
+        if export_rider_name:
+            rider_name = export_rider_name
+        elif first_name and last_name:
+            rider_name = _stats_export_rider_name(first_name, last_name)
         else:
             result_row = row.get('result')
             rider_name = (
@@ -6352,7 +6410,8 @@ def _load_activity_monitor_rider_detail(selected_namespace, rider_id, back_url):
         ):
             def normalize_pcs_race_path(value):
                 path = urllib.parse.urlsplit(str(value or '')).path.rstrip('/')
-                path = re.sub(r'-(?:result|gc)$', '', path, flags=re.I)
+                path = re.sub(r'-(\d{4})-re?$', r'-\1', path, flags=re.I)
+                path = re.sub(r'-(?:res(?:u(?:l(?:t)?)?)?|gc)$', '', path, flags=re.I)
                 path = re.sub(r'-stage-\d+$', '', path, flags=re.I)
                 return path.casefold()
 
@@ -6383,8 +6442,9 @@ def _load_activity_monitor_rider_detail(selected_namespace, rider_id, back_url):
                         continue
                     stage_number = _safe_int(result.get('stage_number'))
                     result['stats_race_url'] = url_for(
-                        'web.stats_editor_pcs_race_results',
-                        pcs_race_id=race_id,
+                        'web.stats_editor_race_detail_by_source',
+                        source='pcs',
+                        race_id=race_id,
                         **({'pcs_stage': stage_number} if stage_number is not None else {}),
                     )
 
@@ -6810,6 +6870,24 @@ def _load_activity_monitor_rider_detail(selected_namespace, rider_id, back_url):
             latest_activity_days_ago = None
             rider['pcs_race_days_current_year'] = None
             load_error = True
+    for result in display_results:
+        if 'is_general_classification' not in result:
+            row_type = str(result.get('row_type') or '').casefold()
+            race_name = str(result.get('race_name') or '').casefold()
+            race_url = str(result.get('safe_race_url') or result.get('race_url') or '')
+            race_path = urllib.parse.urlsplit(race_url).path.casefold()
+            result['is_general_classification'] = (
+                row_type in {'classification', 'overall', 'gc', 'general_classification'}
+                or 'general classification' in race_name
+                or race_path.endswith('-gc')
+            )
+    display_results.sort(
+        key=lambda result: (
+            result.get('result_date') or date.min,
+            bool(result.get('is_general_classification')),
+        ),
+        reverse=True,
+    )
     return {
         'rider': rider, 'checks': checks, 'results': display_results,
         'saved_result_count': len(results), 'profile_links': profile_links,
@@ -7791,6 +7869,98 @@ def rider_detail(rider_id):
         )
         if (activity_data.get('rider') or {}).get('worlddb_rider_id') != rider_id:
             abort(404)
+        # Reuse locally cached PCS stage profiles for the rider's recent results.
+        # Shared PCS results already include their race ID and stage key; older
+        # Activity Monitor results can be matched from their race URL instead.
+        activity_results = activity_data.get('results') or []
+        pcs_profile_results = [
+            result for result in activity_results[:13]
+            if result.get('pcs_race_id') or result.get('race_url') or result.get('safe_race_url')
+        ]
+        profile_years = set()
+        for result in pcs_profile_results:
+            season = _safe_int(result.get('season'))
+            result_date = result.get('result_date')
+            if season:
+                profile_years.add(season)
+            elif getattr(result_date, 'year', None):
+                profile_years.add(result_date.year)
+            elif result_date:
+                date_match = re.match(r'^(\d{4})', str(result_date))
+                if date_match:
+                    profile_years.add(int(date_match.group(1)))
+        if pcs_profile_results:
+            try:
+                def normalize_profile_race_path(value):
+                    path = urllib.parse.urlsplit(str(value or '')).path.rstrip('/')
+                    path = re.sub(r'/(?:result|results|gc)$', '', path, flags=re.I)
+                    path = re.sub(r'-(\d{4})-re?$', r'-\1', path, flags=re.I)
+                    path = re.sub(r'-(?:res(?:u(?:l(?:t)?)?)?|gc)$', '', path, flags=re.I)
+                    path = re.sub(r'-stage-\d+$', '', path, flags=re.I)
+                    return path.casefold()
+
+                race_ids_by_path = {}
+                url_results = [
+                    result for result in pcs_profile_results
+                    if not result.get('pcs_race_id')
+                ]
+                if profile_years and url_results:
+                    calendar_rows = PcsRaceCalendar.query.filter(
+                        PcsRaceCalendar.season_year.in_(profile_years),
+                    ).all()
+                    race_ids_by_path = {
+                        normalize_profile_race_path(row.pcs_race_path or row.result_url): row.id
+                        for row in calendar_rows
+                    }
+                wanted_profile_scopes = set()
+                for result in pcs_profile_results:
+                    race_id = _safe_int(result.get('pcs_race_id'))
+                    if race_id is None:
+                        race_url = result.get('race_url') or result.get('safe_race_url')
+                        race_id = race_ids_by_path.get(normalize_profile_race_path(race_url))
+                    if race_id is None:
+                        continue
+                    stage_number = _safe_int(result.get('stage_number'))
+                    result['stats_race_url'] = url_for(
+                        'web.stats_editor_race_detail_by_source',
+                        source='pcs',
+                        race_id=race_id,
+                        **({'pcs_stage': stage_number} if stage_number is not None else {}),
+                    )
+                    is_gc = bool(result.get('is_general_classification'))
+                    stage_key = result.get('stage_key') or (
+                        'overall' if is_gc else (
+                            f'stage:{stage_number}' if stage_number is not None else 'overall'
+                        )
+                    )
+                    wanted_profile_scopes.add((race_id, stage_key))
+                    result['pcs_profile_scope'] = (race_id, stage_key)
+
+                if wanted_profile_scopes:
+                    page_query = PcsRaceResultPage.query.filter(
+                        PcsRaceResultPage.pcs_race_id.in_({race_id for race_id, _ in wanted_profile_scopes}),
+                        PcsRaceResultPage.stage_key.in_({stage_key for _, stage_key in wanted_profile_scopes}),
+                    )
+                    profile_column_available = pcs_parcours_type_column_available()
+                    tt_column_available = pcs_time_trial_type_column_available()
+                    if profile_column_available:
+                        page_query = page_query.options(undefer(PcsRaceResultPage.parcours_type))
+                    if tt_column_available:
+                        page_query = page_query.options(undefer(PcsRaceResultPage.time_trial_type))
+                    for page in page_query.all():
+                        scope = (page.pcs_race_id, page.stage_key)
+                        profile = page.parcours_type if profile_column_available else None
+                        time_trial_type = (
+                            page.time_trial_type if tt_column_available else None
+                        )
+                        for result in pcs_profile_results:
+                            if result.get('pcs_profile_scope') == scope:
+                                result['profile_display'] = _clean_pcs_profile(profile)
+                                result['time_trial_type'] = (
+                                    'ITT' if time_trial_type == 'ITT' else None
+                                )
+            except Exception:
+                logger.exception('Could not load cached race profiles for rider %s', rider_id)
     if rider is None and activity_data.get('rider', {}).get('worlddb_rider_id') == rider_id:
         activity_rider = activity_data['rider']
         rider = SimpleNamespace(
@@ -7862,6 +8032,12 @@ def rider_detail(rider_id):
         'weight_kg': rider.weight_kg,
     }
     rider_stat_edits = _load_namespace_rider_stat_edits(selected_namespace, rider.cyclist_id) if can_view_stats else []
+    rider_stat_pending_edits = _load_namespace_pending_rider_stat_edits(
+        selected_namespace, rider.cyclist_id,
+    ) if can_view_stats else {}
+    for stat_name, edit in rider_stat_pending_edits.items():
+        if edit.get('final_value') is not None:
+            rider_stats[stat_name] = edit['final_value']
 
     back_team_id = request.args.get('team_id', type=int)
     if back_team_id is None and rider.team_id is not None:
@@ -7912,6 +8088,7 @@ def rider_detail(rider_id):
         rider_stats=rider_stats,
         rider_measurements=rider_measurements,
         rider_stat_edits=rider_stat_edits,
+        rider_stat_pending_edits=rider_stat_pending_edits,
         selected_namespace=selected_namespace,
         stat_fields=STAT_DELTA_FIELDS,
         can_edit_rider_stats=can_edit_rider_stats,
@@ -7997,8 +8174,16 @@ def rider_detail_save_stats(rider_id):
                     WHERE table_schema = 'public' AND table_name = 'stat_lists'
                 """)).all()
             }
+            stat_change_columns = {
+                row[0] for row in conn.execute(text("""
+                    SELECT column_name FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'stat_changes'
+                """)).all()
+            }
             if not list_columns:
                 raise RuntimeError('stat_lists table is missing in namespace database')
+            if not stat_change_columns:
+                raise RuntimeError('stat_changes table is missing in namespace database')
 
             find_params = {'list_name': list_name}
             list_filter = 'list_name = :list_name'
@@ -8055,17 +8240,23 @@ def rider_detail_save_stats(rider_id):
                     WHERE race_result_id IS NULL AND stat_list_id = :list_id
                       AND cdb_cyclist_id = :cyclist_id AND stat_name = :stat_name
                 """), {'list_id': list_id, 'cyclist_id': rider.cyclist_id, 'stat_name': stat_name})
-                conn.execute(text("""
-                    INSERT INTO stat_changes (
-                        race_result_id, stat_list_id, cdb_cyclist_id, stat_name,
-                        original_value, final_value, delta_value,
-                        is_confilict_override, is_approved, updated_at
-                    ) VALUES (
-                        NULL, :list_id, :cyclist_id, :stat_name,
-                        :original_value, :final_value, :delta_value,
-                        FALSE, FALSE, CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Amsterdam'
-                    )
-                """), {
+                insert_columns = [
+                    'race_result_id', 'stat_list_id', 'cdb_cyclist_id', 'stat_name',
+                    'original_value', 'final_value', 'delta_value',
+                    'is_confilict_override', 'is_approved',
+                ]
+                insert_values = [
+                    'NULL', ':list_id', ':cyclist_id', ':stat_name',
+                    ':original_value', ':final_value', ':delta_value',
+                    'FALSE', 'FALSE',
+                ]
+                if 'updated_at' in stat_change_columns:
+                    insert_columns.append('updated_at')
+                    insert_values.append("CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Amsterdam'")
+                conn.execute(text(
+                    f"INSERT INTO stat_changes ({', '.join(insert_columns)}) "
+                    f"VALUES ({', '.join(insert_values)})"
+                ), {
                     'list_id': list_id, 'cyclist_id': rider.cyclist_id, 'stat_name': stat_name,
                     'original_value': original_value, 'final_value': final_value, 'delta_value': delta_value,
                 })
@@ -8089,6 +8280,7 @@ STATS_EDITOR_FILTER_FIELDS = (
     'classification',
     'profile',
     'nation',
+    'junior_race',
     'start_date_from',
     'start_date_to',
     'is_stage_race',
@@ -8107,6 +8299,7 @@ def _default_stats_editor_race_filters():
         'classification': '',
         'profile': '',
         'nation': '',
+        'junior_race': '',
         'start_date_from': '',
         'start_date_to': '',
         'is_stage_race': '',
@@ -8234,6 +8427,12 @@ def stats_editor():
     selected_year, selected_gender = _resolve_namespace_season(selected_namespace)
     season_selected = selected_namespace is not None and selected_year is not None
     pcs_calendar_available = sqlalchemy_inspect(db.engines['main']).has_table('pcs_race_calendar')
+    if request.method == 'GET' and request.args.get('reset_filters') == '1':
+        _save_stats_editor_state(selected_namespace, {
+            'active_method': 'by_race',
+            'race_filters': _default_stats_editor_race_filters(),
+        })
+        return redirect(url_for('web.stats_editor'))
     editor_state = _load_stats_editor_state(selected_namespace)
 
     if request.method == 'POST':
@@ -8382,22 +8581,16 @@ def stats_editor():
                 pcs_query = pcs_query.filter(_normalized_name_expr(PcsRaceCalendar.name).like(f"%{search_term}%"))
             if selected_filters['nation']:
                 pcs_query = pcs_query.filter(PcsRaceCalendar.nation_name == selected_filters['nation'])
+            if selected_filters['junior_race'] in ('true', 'false'):
+                pcs_query = pcs_query.filter(
+                    PcsRaceCalendar.is_junior_race.is_(
+                        selected_filters['junior_race'] == 'true'
+                    )
+                )
             if parsed_start_date_from is not None:
                 pcs_query = pcs_query.filter(PcsRaceCalendar.start_date >= parsed_start_date_from)
             if parsed_start_date_to is not None:
                 pcs_query = pcs_query.filter(PcsRaceCalendar.start_date <= parsed_start_date_to)
-            if selected_filters['is_stage_race'] == 'true':
-                pcs_query = pcs_query.filter(
-                    PcsRaceCalendar.start_date.isnot(None),
-                    PcsRaceCalendar.end_date > PcsRaceCalendar.start_date,
-                )
-            elif selected_filters['is_stage_race'] == 'false':
-                pcs_query = pcs_query.filter(or_(
-                    PcsRaceCalendar.start_date.is_(None),
-                    PcsRaceCalendar.end_date.is_(None),
-                    PcsRaceCalendar.end_date <= PcsRaceCalendar.start_date,
-                ))
-
             category_values = {
                 value or '-'
                 for (value,) in pcs_query.with_entities(PcsRaceCalendar.classification)
@@ -8424,6 +8617,7 @@ def stats_editor():
             server_paginated_races = not (
                 selected_filters['profile']
                 or selected_filters['has_time_trial'] == 'true'
+                or selected_filters['is_stage_race']
                 or selected_edit_statuses
             )
             total_race_count = pcs_query.count()
@@ -8483,8 +8677,7 @@ def stats_editor():
                 for page in cached_pages:
                     payload = page.payload or {}
                     profile_value = _clean_pcs_profile(
-                        page.parcours_type if parcours_type_available
-                        else payload.get('parcours_type') or ''
+                        page.parcours_type if parcours_type_available else None
                     )
                     if profile_value:
                         pcs_race_profiles.setdefault(page.pcs_race_id, set()).add(profile_value)
@@ -8519,10 +8712,19 @@ def stats_editor():
 
                 for race_id, stage_numbers in pcs_cached_stage_keys.items():
                     if stage_numbers:
-                        pcs_multiday_race_ids.add(race_id)
+                        if len(stage_numbers) > 1:
+                            pcs_multiday_race_ids.add(race_id)
                         pcs_stage_counts[race_id] = max(
                             pcs_stage_counts.get(race_id, 0), len(stage_numbers),
                         )
+
+                # A complete overall page tells us the actual number of race
+                # stages. Use it in preference to the calendar date span.
+                for race_id, stage_numbers in pcs_overall_stage_numbers.items():
+                    if len(stage_numbers) > 1:
+                        pcs_multiday_race_ids.add(race_id)
+                    else:
+                        pcs_multiday_race_ids.discard(race_id)
 
             pcs_delta_status = _load_namespace_provider_delta_status(
                 selected_namespace, 'pcs', pcs_race_ids,
@@ -8533,6 +8735,11 @@ def stats_editor():
                 totals[0] += value['total_changes']
                 totals[1] += value['approved_changes']
             pcs_races = []
+            winner_matcher = PcsRiderMatcher(selected_namespace) if selected_namespace else None
+            winner_name_index = (
+                _load_stats_editor_rider_name_index(selected_namespace)
+                if selected_namespace else {}
+            )
             for pcs_race in pcs_race_records:
                 total_changes, approved_changes = pcs_delta_totals.get(
                     str(pcs_race.id), (0, 0),
@@ -8562,6 +8769,7 @@ def stats_editor():
                     race_id=None,
                     name=pcs_race.name,
                     classification=pcs_race.classification,
+                    is_junior_race=pcs_race.is_junior_race,
                     start_date=pcs_race.start_date,
                     end_date=pcs_race.end_date,
                     nation_name=pcs_race.nation_name,
@@ -8570,6 +8778,10 @@ def stats_editor():
                     pcs_race_id=pcs_race.id,
                     pcs_overall_cached=pcs_race.id in pcs_cached_overall,
                     is_multi_day=pcs_race.id in pcs_multiday_race_ids,
+                    can_edit_profile=(
+                        pcs_parcours_type_column_available()
+                    ),
+                    pcs_stage_count_known=pcs_race.id in pcs_overall_stage_numbers,
                     pcs_url=pcs_race.result_url,
                     category_label=pcs_race.category_label,
                     pcs_stage_count=pcs_stage_counts.get(pcs_race.id, 0),
@@ -8593,16 +8805,19 @@ def stats_editor():
                         if not is_multi_day:
                             race.time_trial_type = pcs_time_trial_type(overall_payload.get('stage_type'))
                     if not is_multi_day:
-                        race.distance_km = overall_payload.get('distance_km')
+                        race.distance_km = _round_pcs_distance(overall_payload.get('distance_km'))
                     winner_row = next((
                         row for row in overall_payload.get('rows', [])
                         if row.get('position') == 1
                     ), None)
                     if winner_row:
-                        first_name, last_name = split_pcs_rider_name(winner_row.get('rider_name'))
-                        race.winner_name = ' '.join(
-                            part for part in (first_name, last_name) if part
-                        ) or None
+                        winner = _stats_editor_winner_link(
+                            winner_row.get('rider_name'), winner_row.get('pcs_rider_path'),
+                            selected_namespace, winner_matcher, winner_name_index,
+                        )
+                        race.winner_name = winner['name']
+                        race.winner_url = winner['url']
+                        race.winner_in_cdb = winner['in_cdb']
                 flag_code = nationality_flag_code(pcs_race.nation_name)
                 if flag_code:
                     race_flag_map[race.id] = flag_code
@@ -8617,25 +8832,37 @@ def stats_editor():
             races.extend(pcs_races)
             races.sort(key=lambda race: (race.start_date or date.max, (race.name or '').casefold()))
 
+        if selected_filters['is_stage_race']:
+            wants_multi_day = selected_filters['is_stage_race'] == 'true'
+            races = [
+                race for race in races
+                if bool(getattr(race, 'is_multi_day', False)) == wants_multi_day
+            ]
+
         category_values = set(filter_choices['categories'])
         if not category_values:
             category_values = {(race.classification or '-') for race in races}
             filter_choices['categories'] = sorted(category_values, key=str.casefold)
         for race in races:
-            is_multi_day = bool(getattr(race, 'is_multi_day', False)) or bool(
-                race.start_date and race.end_date and race.end_date > race.start_date
-            ) or (
-                (getattr(race, 'pcs_stage_count', 0) or 0) > 1
-                or (getattr(race, 'stage_count', 0) or 0) > 1
-            )
+            if getattr(race, 'is_pcs', False) and getattr(
+                race, 'pcs_stage_count_known', False,
+            ):
+                is_multi_day = (getattr(race, 'pcs_stage_count', 0) or 0) > 1
+            else:
+                is_multi_day = bool(getattr(race, 'is_multi_day', False)) or bool(
+                    race.start_date and race.end_date and race.end_date > race.start_date
+                ) or (
+                    (getattr(race, 'pcs_stage_count', 0) or 0) > 1
+                    or (getattr(race, 'stage_count', 0) or 0) > 1
+                )
             profile = (
                 race.parcours_type
                 if getattr(race, 'is_pcs', False)
                 else race.profile
             )
-            race.table_profile = _pcs_table_profile(profile, is_multi_day)
+            race.table_profile = '-' if is_multi_day else _pcs_table_profile(profile)
             race.table_distance = (
-                getattr(race, 'distance_km', None)
+                _round_pcs_distance(getattr(race, 'distance_km', None))
                 if not is_multi_day
                 else None
             )
@@ -8706,6 +8933,9 @@ def stats_editor():
         selected_race_year=selected_race_year,
         pcs_tt_column_available=(
             pcs_calendar_available and pcs_time_trial_type_column_available()
+        ),
+        can_update_profile=(
+            _can_update_stats() and pcs_parcours_type_column_available()
         ),
     )
 
@@ -9241,6 +9471,10 @@ def stats_editor_list_detail(list_id):
             'rider_id': cdb_cyclist_id,
             'rider_link_id': cdb_cyclist_id,
             'rider_name': rider_name,
+            'export_rider_name': (
+                _stats_export_rider_name(rider.get('first_name'), rider.get('last_name'))
+                if rider is not None else ''
+            ),
             'team_id': rider.get('team_id') if rider is not None else None,
             'team_name': (rider.get('team_name') if rider is not None and rider.get('team_name') else '-'),
             'rider_in_namespace': rider_in_namespace,
@@ -9263,6 +9497,10 @@ def stats_editor_list_detail(list_id):
         stat_fields=STAT_DELTA_FIELDS,
         can_approve_stats=_can_approve_stats(),
         can_update_stats=_can_update_stats(),
+        change_export_text=_race_stat_changes_export(
+            list_row.get('list_name'), None, rows,
+        ),
+        change_export_filename=_race_stat_changes_filename(list_row.get('list_name')),
     )
 
 
@@ -9306,6 +9544,27 @@ def stats_editor_save_list_stat_deltas(list_id):
         saved_count = 0
         skipped_count = 0
         with engine.begin() as conn:
+            stat_change_columns = {
+                column['name']
+                for column in sqlalchemy_inspect(conn).get_columns('stat_changes')
+            }
+            insert_columns = [
+                'race_result_id', 'stat_list_id', 'cdb_cyclist_id', 'stat_name',
+                'original_value', 'final_value', 'delta_value',
+                'is_confilict_override', 'is_approved',
+            ]
+            insert_values = [
+                'NULL', ':list_id', ':cdb_cyclist_id', ':stat_name',
+                ':original_value', ':final_value', ':delta_value',
+                ':is_confilict_override', 'FALSE',
+            ]
+            if 'updated_at' in stat_change_columns:
+                insert_columns.append('updated_at')
+                insert_values.append("CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Amsterdam'")
+            insert_sql = (
+                f"INSERT INTO stat_changes ({', '.join(insert_columns)}) "
+                f"VALUES ({', '.join(insert_values)})"
+            )
             snapshot_rider_rows = conn.execute(
                 text(
                     """
@@ -9403,34 +9662,7 @@ def stats_editor_save_list_stat_deltas(list_id):
                 )
 
                 conn.execute(
-                    text(
-                        """
-                        INSERT INTO stat_changes (
-                            race_result_id,
-                            stat_list_id,
-                            cdb_cyclist_id,
-                            stat_name,
-                            original_value,
-                            final_value,
-                            delta_value,
-                            is_confilict_override,
-                            is_approved,
-                            updated_at
-                        )
-                        VALUES (
-                            NULL,
-                            :list_id,
-                            :cdb_cyclist_id,
-                            :stat_name,
-                            :original_value,
-                            :final_value,
-                            :delta_value,
-                            :is_confilict_override,
-                            FALSE,
-                            CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Amsterdam'
-                        )
-                        """
-                    ),
+                    text(insert_sql),
                     {
                         'list_id': list_id,
                         'cdb_cyclist_id': cdb_cyclist_id,
@@ -9994,15 +10226,111 @@ def _pcs_race_classification_label(category_label, start_date, end_date):
     return ' '.join(part for part in ('Ama', category_suffix, race_duration) if part)
 
 
+def _stats_editor_rider_name_key(first_name, last_name):
+    parts = []
+    for value in (first_name, last_name):
+        normalized = unicodedata.normalize('NFKD', str(value or ''))
+        normalized = ''.join(char for char in normalized if not unicodedata.combining(char))
+        parts.append(' '.join(re.findall(r'[a-z0-9]+', normalized.casefold())))
+    return tuple(parts) if all(parts) else None
+
+
+def _load_stats_editor_rider_name_index(namespace):
+    """Load exact names from only the selected Namespace's CDB."""
+    if namespace is None:
+        return {}
+    engine = create_engine(namespace.build_connection_string())
+    try:
+        with engine.connect() as connection:
+            rows = connection.execute(text('''
+                SELECT id, first_name, last_name FROM cdb_cyclist
+                WHERE NULLIF(TRIM(first_name), '') IS NOT NULL
+                  AND NULLIF(TRIM(last_name), '') IS NOT NULL
+            ''')).mappings().all()
+    except Exception:
+        logger.exception('Failed to load rider names from namespace %s', namespace.slug)
+        return {}
+    finally:
+        engine.dispose()
+
+    index = {}
+    for row in rows:
+        key = _stats_editor_rider_name_key(row['first_name'], row['last_name'])
+        if key:
+            index.setdefault(key, set()).add(row['id'])
+    return index
+
+
+def _stats_editor_winner_link(rider_name, rider_path, namespace, matcher, rider_name_index):
+    """Build a winner link, preferring an exact saved rider match in this CDB."""
+    display_name = ' '.join(
+        part for part in split_pcs_rider_name(rider_name) if part
+    ) or rider_name
+    pcs_url = None
+    try:
+        parsed_path = urllib.parse.urlsplit(rider_path or '')
+    except ValueError:
+        parsed_path = urllib.parse.SplitResult('', '', '', '', '')
+    safe_pcs_path = parsed_path.path.startswith('/rider/') and (
+        not parsed_path.scheme and not parsed_path.netloc
+        or parsed_path.scheme == 'https'
+        and parsed_path.hostname in {'procyclingstats.com', 'www.procyclingstats.com'}
+    )
+    if safe_pcs_path:
+        pcs_url = urllib.parse.urlunsplit((
+            'https', 'www.procyclingstats.com', parsed_path.path, '', '',
+        ))
+
+    cyclist_id = None
+    if matcher and pcs_url:
+        match = matcher.match(rider_name, pcs_url)
+        cyclist_id = match.cyclist_id
+    if cyclist_id is None and namespace:
+        first_name, last_name = split_pcs_rider_name(rider_name)
+        matches = rider_name_index.get(_stats_editor_rider_name_key(first_name, last_name), set())
+        if len(matches) == 1:
+            cyclist_id = next(iter(matches))
+    if cyclist_id is not None:
+        return {
+            'name': display_name,
+            'url': url_for(
+                'web.rider_detail', rider_id=cyclist_id,
+                return_to=request.full_path.rstrip('?'),
+                return_label='Back to Stats Editor',
+            ),
+            'in_cdb': True,
+        }
+    return {'name': display_name, 'url': pcs_url, 'in_cdb': False}
+
+
+def _round_pcs_distance(value):
+    """Normalize PCS distances to one decimal place for storage and display."""
+    if value is None or value == '':
+        return None
+    try:
+        return round(float(value), 1)
+    except (TypeError, ValueError):
+        return None
+
+
 def _clean_pcs_profile(value):
     """Normalize missing profile values so templates never render literal None."""
     normalized = str(value or '').strip()
     return None if normalized.casefold() in {'', 'none', 'null'} else normalized
 
 
-def _pcs_table_profile(value, is_multi_day):
-    """Only display a profile on a single-day race row, never a GC row."""
-    return '-' if is_multi_day else (_clean_pcs_profile(value) or '-')
+def _pcs_table_profile(value):
+    """Display the cached profile on the race row, including stage races."""
+    return _clean_pcs_profile(value) or '-'
+
+
+_PCS_EDITABLE_PARCOURS_TYPES = {
+    'flat': 'Flat',
+    'hills, flat finish': 'Hills, flat finish',
+    'hills, uphill finish': 'Hills, uphill finish',
+    'mountains, flat finish': 'Mountains, flat finish',
+    'mountains, uphill finish': 'Mountains, uphill finish',
+}
 
 
 def _pcs_race_result_map(pcs_race, stage_number=None):
@@ -10078,18 +10406,31 @@ def _pcs_scope_state(namespace, race_result_id, cyclist_ids, race_result_ids=Non
                 '''), {'race_result_id': race_result_id, 'cyclist_ids': cyclist_ids}).mappings().all()
                 snapshots.update({row['cdb_cyclist_id']: _snapshot_stats_from_row(row) for row in snap_rows})
                 delta_rows = conn.execute(text('''
-                    SELECT cdb_cyclist_id, stat_name, original_value, final_value,
+                    SELECT id, cdb_cyclist_id, stat_name, original_value, final_value,
                            delta_value, is_approved
                     FROM stat_changes
-                    WHERE race_result_id = ANY(:race_result_ids)
-                      AND stat_list_id IS NULL
-                      AND cdb_cyclist_id = ANY(:cyclist_ids)
-                    ORDER BY is_approved ASC, id ASC
+                    WHERE cdb_cyclist_id = ANY(:cyclist_ids)
+                      AND (
+                          (race_result_id = ANY(:race_result_ids) AND stat_list_id IS NULL)
+                          OR (race_result_id IS NULL AND stat_list_id IS NOT NULL
+                              AND is_approved = FALSE)
+                      )
+                    ORDER BY id ASC
                 '''), {'race_result_ids': scope_ids, 'cyclist_ids': cyclist_ids}).mappings().all()
                 for row in delta_rows:
-                    # Race-wide pending edits are duplicated to each stage scope. Prefer
-                    # an unapproved copy so an older approved scope cannot mask it.
-                    deltas.setdefault(row['cdb_cyclist_id'], {})[row['stat_name']] = dict(row)
+                    rider_deltas = deltas.setdefault(row['cdb_cyclist_id'], {})
+                    stat_name = row['stat_name']
+                    existing = rider_deltas.get(stat_name)
+                    should_replace = (
+                        existing is None
+                        or (existing['is_approved'] and not row['is_approved'])
+                        or (
+                            existing['is_approved'] == row['is_approved']
+                            and row['id'] > existing['id']
+                        )
+                    )
+                    if should_replace:
+                        rider_deltas[stat_name] = dict(row)
             conflicts = _load_scope_stat_change_conflicts(
                 conn,
                 'stat_changes.race_result_id = ANY(:race_result_ids) AND stat_changes.stat_list_id IS NULL',
@@ -10102,8 +10443,79 @@ def _pcs_scope_state(namespace, race_result_id, cyclist_ids, race_result_ids=Non
     return status, snapshots, deltas, conflicts
 
 
+def _full_cdb_birth_date(value):
+    """Parse a full CDB YYYYMMDD birth value; a year alone is not precise enough."""
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    raw = str(value or '').strip()
+    if re.fullmatch(r'\d{8}', raw):
+        try:
+            return datetime.strptime(raw, '%Y%m%d').date()
+        except ValueError:
+            return None
+    try:
+        parsed = date.fromisoformat(raw)
+    except ValueError:
+        return None
+    return parsed if len(raw) >= 10 else None
+
+
+def _pcs_result_event_date(pcs_race, parsed_result, stage_number):
+    """Choose the date on which a PCS result scope took place."""
+    raw_date = parsed_result.stage_date if stage_number is not None else None
+    if isinstance(raw_date, datetime):
+        return raw_date.date()
+    if isinstance(raw_date, date):
+        return raw_date
+    raw_date = str(raw_date or '').strip()
+    if raw_date:
+        try:
+            return date.fromisoformat(raw_date[:10])
+        except ValueError:
+            for date_format in ('%d %B %Y', '%d %b %Y', '%d.%m.%Y', '%d.%m.%y'):
+                try:
+                    return datetime.strptime(raw_date, date_format).date()
+                except ValueError:
+                    continue
+    if pcs_race.start_date and pcs_race.end_date and pcs_race.end_date > pcs_race.start_date:
+        return pcs_race.end_date
+    return pcs_race.start_date or pcs_race.end_date
+
+
+def _pcs_date_iso_display(value):
+    """Format a PCS date value as the application's YYYY-MM-DD date string."""
+    if isinstance(value, datetime):
+        return value.date().isoformat()
+    if isinstance(value, date):
+        return value.isoformat()
+    raw_date = str(value or '').strip()
+    if not raw_date:
+        return None
+    try:
+        return date.fromisoformat(raw_date[:10]).isoformat()
+    except ValueError:
+        for date_format in ('%d %B %Y', '%d %b %Y', '%d.%m.%Y', '%d.%m.%y'):
+            try:
+                return datetime.strptime(raw_date, date_format).date().isoformat()
+            except ValueError:
+                continue
+    return None
+
+
+def _age_on_date_from_cdb_birth_value(birth_value, event_date):
+    birth_date = _full_cdb_birth_date(birth_value)
+    if birth_date is None or event_date is None or event_date < birth_date:
+        return None
+    return event_date.year - birth_date.year - (
+        (event_date.month, event_date.day) < (birth_date.month, birth_date.day)
+    )
+
+
 def _build_pcs_race_display_rows(pcs_race, namespace, race_result_id, stage_number=None):
     parsed = _fetch_pcs_race_result(pcs_race, stage_number=stage_number)
+    event_date = _pcs_result_event_date(pcs_race, parsed, stage_number)
     race_result_ids = _pcs_race_scope_map_ids(
         pcs_race,
         stage_number,
@@ -10155,6 +10567,8 @@ def _build_pcs_race_display_rows(pcs_race, namespace, race_result_id, stage_numb
             item['first_name'] = cyclist['first_name'] or ''
             item['last_name'] = cyclist['last_name'] or ''
             item['nationality'] = cyclist['nationality']
+            db_age = _age_on_date_from_cdb_birth_value(cyclist['birth_date'], event_date)
+            item['age'] = db_age if db_age is not None else item['result'].age
             item['rider_name'] = ' '.join(filter(None, [
                 cyclist['first_name'], cyclist['last_name'],
             ])) or item['result'].rider_name
@@ -10195,7 +10609,7 @@ def _build_pcs_race_display_rows(pcs_race, namespace, race_result_id, stage_numb
             'team_url': None,
             'nationality': canonical_nationality(item.get('nationality') or result.nationality),
             'nationality_flag_code': nationality_flag_code(item.get('nationality') or result.nationality),
-            'age': result.age,
+            'age': item.get('age', result.age),
             'time': _format_race_result_time(
                 result.time or result.position_status,
                 as_time_gap=result.position not in (None, 1),
@@ -10241,6 +10655,22 @@ def stats_editor_pcs_race_detail(pcs_race_id):
         pcs_race.start_date and pcs_race.end_date
         and pcs_race.end_date > pcs_race.start_date
     ) or cached_stage_count > 1
+    route_profile_schema_available = pcs_parcours_type_column_available()
+    time_trial_schema_available = pcs_time_trial_type_column_available()
+    profile_stage_key = _pcs_result_page_key(stage_number)
+    profile_value = None
+    if cached_page and (stage_number is not None or not is_multi_day_race):
+        if route_profile_schema_available:
+            profile_value = _clean_pcs_profile(cached_page.parcours_type)
+        if not profile_value:
+            profile_value = _clean_pcs_profile(
+                cached_result.parcours_type if cached_result else None
+            )
+    detail_time_trial_type = None
+    if time_trial_schema_available and cached_page:
+        detail_time_trial_type = cached_page.time_trial_type
+    elif cached_result:
+        detail_time_trial_type = pcs_time_trial_type(cached_result.stage_type)
     race_result_ids = _pcs_race_scope_map_ids(pcs_race, stage_number)
     db.session.commit()
     status, _, _, conflicts = _pcs_scope_state(
@@ -10253,35 +10683,21 @@ def stats_editor_pcs_race_detail(pcs_race_id):
     return render_template(
         'stat_race_detail.html', race_source='pcs', pcs_race=pcs_race,
         race_name=pcs_race.name,
-        race_source_label=f'PCS · {pcs_race.classification or pcs_race.category_label}',
-        race_source_id_label='PCS Race ID', race_source_id=pcs_race.id,
+        race_source_label=pcs_race.classification or pcs_race.category_label,
+        race_source_id_label='Race ID', race_source_id=pcs_race.id,
         race_result_url=_pcs_result_source_url(pcs_race, stage_number),
         pcs_result_is_cached=cached_page is not None,
         race_details_items=[
             ('Category', pcs_race.classification),
-            ('Description', None),
-            ('Nation', pcs_race.nation_name, 'race-nation'),
-            (
-                'Profile',
-                (
-                    (
-                        _clean_pcs_profile(cached_page.parcours_type)
-                        or _clean_pcs_profile(
-                            cached_result.parcours_type if cached_result else None
-                        )
-                    )
-                    if cached_page and (stage_number is not None or not is_multi_day_race)
-                    else None
-                ),
-                'race-profile',
-            ),
+            ('Age Class', 'JR' if pcs_race.is_junior_race else 'MU/ME'),
+            ('Profile', profile_value, 'race-profile'),
             (
                 'Distance (km)',
-                cached_result.distance_km if cached_result and not is_multi_day_race else None,
+                _round_pcs_distance(cached_result.distance_km) if cached_result and not is_multi_day_race else None,
                 'race-distance',
             ),
             ('Start date', pcs_race.start_date, 'race-start-date'),
-            ('End date', pcs_race.end_date),
+            ('Nation', pcs_race.nation_name, 'race-nation'),
             (
                 'From',
                 cached_result.start_location if cached_result and not is_multi_day_race else None,
@@ -10293,6 +10709,17 @@ def stats_editor_pcs_race_detail(pcs_race_id):
                 'race-to',
             ),
         ],
+        race_details_can_update_profile=(
+            _can_update_stats() and route_profile_schema_available
+        ),
+        race_details_profile_url=url_for('web.stats_editor_cycle_pcs_profile', pcs_race_id=pcs_race.id),
+        race_details_profile_stage_key=profile_stage_key,
+        race_details_time_trial_type=detail_time_trial_type,
+        race_details_can_toggle_itt=(
+            _can_update_stats() and time_trial_schema_available and cached_page is not None
+            and not (stage_number is None and is_multi_day_race)
+        ),
+        race_details_itt_url=url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=pcs_race.id),
         result_rows=[], stage_rows=[], selected_stage=None,
         time_separators_allowed=bool(
             stage_number is not None or not (
@@ -10349,6 +10776,11 @@ def stats_editor_pcs_race_stages(pcs_race_id):
                 stage for stage in parsed_result.stages or []
                 if stage.get('stage_number') is not None and not stage.get('is_overall')
             ]
+        namespace = _get_selected_namespace(_get_accessible_namespaces())
+        winner_matcher = PcsRiderMatcher(namespace) if namespace else None
+        winner_name_index = (
+            _load_stats_editor_rider_name_index(namespace) if namespace else {}
+        )
         stages = []
         for stage in stage_links:
             stage_number = stage.get('stage_number')
@@ -10362,6 +10794,9 @@ def stats_editor_pcs_race_stages(pcs_race_id):
                 'stage_date': None,
                 'winner_name': None,
                 'can_toggle_itt': pcs_time_trial_type_column_available(),
+                'can_edit_profile': (
+                    pcs_parcours_type_column_available() and _can_update_stats()
+                ),
             }
             try:
                 stage_page = _fetch_pcs_race_result(pcs_race, stage_number)
@@ -10377,23 +10812,28 @@ def stats_editor_pcs_race_stages(pcs_race_id):
                     if row.position == 1
                 ), None)
                 if winner_row:
-                    first_name, last_name = split_pcs_rider_name(winner_row.rider_name)
-                    stage_data['winner_name'] = ' '.join(
-                        part for part in (first_name, last_name) if part
-                    ) or None
+                    winner = _stats_editor_winner_link(
+                        winner_row.rider_name, winner_row.pcs_rider_path,
+                        namespace, winner_matcher, winner_name_index,
+                    )
+                    stage_data.update({
+                        'winner_name': winner['name'],
+                        'winner_url': winner['url'],
+                        'winner_in_cdb': winner['in_cdb'],
+                    })
                 stage_data.update({
                     'profile_display': _clean_pcs_profile(stage_page.parcours_type),
                     'time_trial_type': (
-                        pcs_time_trial_type(stage.get('name'))
-                        or format_pcs_stage_profile(stage_page)
+                        stage_page.time_trial_type
+                        if pcs_time_trial_type_column_available()
+                        else (pcs_time_trial_type(stage.get('name')) or format_pcs_stage_profile(stage_page))
                     ),
                     'parcours_type': _clean_pcs_profile(stage_page.parcours_type),
                     'is_cached': True,
-                    'distance_km': stage_page.distance_km,
+                    'distance_km': _round_pcs_distance(stage_page.distance_km),
                     'stage_date': stage_page.stage_date,
                 })
             stages.append(stage_data)
-        namespace = _get_selected_namespace(_get_accessible_namespaces())
         _pcs_race_scope_map_ids(pcs_race, parsed_overall=parsed_result)
         db.session.commit()
         cached_stage_numbers = set()
@@ -10431,7 +10871,7 @@ def stats_editor_toggle_pcs_itt(pcs_race_id):
     if not _can_access_panel('stat_editor') or not _can_update_stats():
         abort(403)
     stage_key = (request.form.get('stage_key', type=str) or '').strip()
-    if stage_key != 'overall' and not re.fullmatch(r'stage:[1-9]\d*', stage_key):
+    if stage_key != 'overall' and not re.fullmatch(r'stage:(?:0|[1-9]\d*)', stage_key):
         return jsonify(error='Invalid stage key.'), 400
     requested = (request.form.get('is_itt', type=str) or '').strip().lower()
     if requested not in {'true', 'false'}:
@@ -10448,24 +10888,52 @@ def stats_editor_toggle_pcs_itt(pcs_race_id):
     ).first()
     if page is None:
         return jsonify(error='Cached PCS result page not found.'), 404
-    if page.time_trial_type == 'TTT' and requested == 'true':
-        return jsonify(error='A team time trial cannot be marked as an individual time trial.'), 409
-    if stage_key.startswith('stage:') and requested == 'true':
-        stage_number = _safe_int(stage_key.split(':', 1)[1])
-        overall_page = PcsRaceResultPage.query.filter_by(
-            pcs_race_id=pcs_race_id,
-            stage_key='overall',
-        ).first()
-        stage_name = next((
-            stage.get('name')
-            for stage in ((overall_page.payload or {}).get('stages') or [])
-            if _safe_int(stage.get('stage_number')) == stage_number
-        ), None) if overall_page else None
-        if pcs_time_trial_type(stage_name) == 'TTT':
-            return jsonify(error='A team time trial cannot be marked as an individual time trial.'), 409
     page.time_trial_type = 'ITT' if requested == 'true' else None
     db.session.commit()
     return jsonify(ok=True, time_trial_type=page.time_trial_type)
+
+
+@web_bp.route('/stats-editor/races/pcs/<int:pcs_race_id>/profile', methods=['POST'])
+@login_required
+def stats_editor_cycle_pcs_profile(pcs_race_id):
+    """Save a manually selected route profile on a cached PCS result scope."""
+    if not _can_access_panel('stat_editor') or not _can_update_stats():
+        abort(403)
+    if not pcs_parcours_type_column_available():
+        return jsonify(error='PCS route-profile schema is unavailable.'), 503
+
+    stage_key = (request.form.get('stage_key', type=str) or 'overall').strip()
+    if stage_key != 'overall' and not re.fullmatch(r'stage:(?:0|[1-9]\d*)', stage_key):
+        return jsonify(error='Invalid stage key.'), 400
+    stage_number = int(stage_key.split(':', 1)[1]) if stage_key.startswith('stage:') else None
+    requested = (request.form.get('parcours_type', type=str) or '').strip()
+    normalized = requested.casefold()
+    if requested and normalized not in _PCS_EDITABLE_PARCOURS_TYPES:
+        return jsonify(error='Invalid PCS route profile.'), 400
+    parcours_type = _PCS_EDITABLE_PARCOURS_TYPES.get(normalized)
+
+    pcs_race = PcsRaceCalendar.query.get_or_404(pcs_race_id)
+    page = PcsRaceResultPage.query.filter_by(
+        pcs_race_id=pcs_race_id, stage_key=stage_key,
+    ).options(undefer(PcsRaceResultPage.parcours_type)).first()
+    if page is None:
+        try:
+            _fetch_pcs_race_result(pcs_race, stage_number)
+        except Exception as exc:
+            logger.exception(
+                'Could not fetch PCS result before saving route profile for race %s scope %s',
+                pcs_race_id, stage_key,
+            )
+            return jsonify(error=pcs_result_fetch_error_message(exc)), 502
+        page = PcsRaceResultPage.query.filter_by(
+            pcs_race_id=pcs_race_id, stage_key=stage_key,
+        ).options(undefer(PcsRaceResultPage.parcours_type)).first()
+        if page is None:
+            return jsonify(error='PCS did not return a result page for this race scope.'), 502
+    page.parcours_type = parcours_type
+    page.payload = {**(page.payload or {}), '_parcours_type_manual': True}
+    db.session.commit()
+    return jsonify(ok=True, parcours_type=page.parcours_type)
 
 
 @web_bp.route('/stats-editor/races/pcs/<int:pcs_race_id>/results')
@@ -10476,6 +10944,10 @@ def stats_editor_pcs_race_results(pcs_race_id):
     pcs_race = PcsRaceCalendar.query.get_or_404(pcs_race_id)
     stage_number = _parse_pcs_stage_number(request.args.get('pcs_stage'))
     namespace = _get_selected_namespace(_get_accessible_namespaces())
+    winner_matcher = PcsRiderMatcher(namespace) if namespace else None
+    winner_name_index = (
+        _load_stats_editor_rider_name_index(namespace) if namespace else {}
+    )
     result_map = _pcs_race_result_map(pcs_race, stage_number)
     db.session.commit()
     parsed_result = None
@@ -10509,10 +10981,10 @@ def stats_editor_pcs_race_results(pcs_race_id):
             'profile_display': (
                 None if is_multi_day else _clean_pcs_profile(parsed_result.parcours_type)
             ),
-            'distance_km': parsed_result.distance_km,
+            'distance_km': _round_pcs_distance(parsed_result.distance_km),
             'start_location': parsed_result.start_location,
             'end_location': parsed_result.end_location,
-            'stage_date': parsed_result.stage_date,
+            'stage_date': _pcs_date_iso_display(parsed_result.stage_date),
             'stage_type': parsed_result.stage_type,
             'time_trial_type': format_pcs_stage_profile(parsed_result),
             'parcours_type': parsed_result.parcours_type,
@@ -10537,16 +11009,30 @@ def stats_editor_pcs_race_results(pcs_race_id):
                     except Exception:
                         stage_page = None
             if stage_page:
+                winner_row = next((
+                    row for row in stage_page.rows
+                    if row.position == 1
+                ), None)
+                if winner_row:
+                    winner = _stats_editor_winner_link(
+                        winner_row.rider_name, winner_row.pcs_rider_path,
+                        namespace, winner_matcher, winner_name_index,
+                    )
+                    stage_details.update({
+                        'winner_name': winner['name'],
+                        'winner_url': winner['url'],
+                    })
                 stage_details.update({
                     'stage_date': stage_page.stage_date,
                     'stage_type': stage_page.stage_type,
                     'time_trial_type': (
-                        pcs_time_trial_type(stage.get('name'))
-                        or format_pcs_stage_profile(stage_page)
+                        stage_page.time_trial_type
+                        if pcs_time_trial_type_column_available()
+                        else (pcs_time_trial_type(stage.get('name')) or format_pcs_stage_profile(stage_page))
                     ),
                     'parcours_type': _clean_pcs_profile(stage_page.parcours_type),
                     'profile_display': _clean_pcs_profile(stage_page.parcours_type),
-                    'distance_km': stage_page.distance_km,
+                    'distance_km': _round_pcs_distance(stage_page.distance_km),
                     'start_location': stage_page.start_location,
                     'end_location': stage_page.end_location,
                 })
@@ -10653,6 +11139,25 @@ def stats_editor_save_pcs_stat_deltas(pcs_race_id):
         engine = create_engine(namespace.build_connection_string())
         saved = 0
         with engine.begin() as conn:
+            stat_change_columns = {
+                column['name'] for column in sqlalchemy_inspect(conn).get_columns('stat_changes')
+            }
+            change_insert_columns = [
+                'race_result_id', 'stat_list_id', 'cdb_cyclist_id', 'stat_name',
+                'original_value', 'final_value', 'delta_value',
+                'is_confilict_override', 'is_approved',
+            ]
+            change_insert_values = [
+                ':rid', 'NULL', ':cid', ':name', ':original', ':final', ':delta',
+                ':override', 'FALSE',
+            ]
+            if 'updated_at' in stat_change_columns:
+                change_insert_columns.append('updated_at')
+                change_insert_values.append("CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Amsterdam'")
+            change_insert_sql = (
+                f"INSERT INTO stat_changes ({', '.join(change_insert_columns)}) "
+                f"VALUES ({', '.join(change_insert_values)})"
+            )
             existing_pending_rows = conn.execute(text('''
                 SELECT cdb_cyclist_id, stat_name, final_value, is_confilict_override
                 FROM stat_changes
@@ -10693,16 +11198,7 @@ def stats_editor_save_pcs_stat_deltas(pcs_race_id):
                     '''), {'rid': scope_id, 'cid': cyclist_id, 'name': stat_name})
                     if final_value == original_value and not override:
                         continue
-                    conn.execute(text('''
-                        INSERT INTO stat_changes (
-                            race_result_id, stat_list_id, cdb_cyclist_id, stat_name,
-                            original_value, final_value, delta_value, is_confilict_override, is_approved,
-                            updated_at
-                        ) VALUES (
-                            :rid, NULL, :cid, :name, :original, :final, :delta, :override, FALSE,
-                            CURRENT_TIMESTAMP AT TIME ZONE 'Europe/Amsterdam'
-                        )
-                    '''), {
+                    conn.execute(text(change_insert_sql), {
                         'rid': scope_id, 'cid': cyclist_id, 'name': stat_name,
                         'original': original_value, 'final': final_value,
                         'delta': final_value - original_value, 'override': override,

@@ -32,6 +32,11 @@ _EMPTY_RESULT_STATE = 'no_result_rows'
 logger = logging.getLogger('pcs.result_pages')
 
 
+def _result_is_junior(parsed_result):
+    named_ages = [row.age for row in parsed_result.rows if row.age is not None]
+    return len(named_ages) >= 3 and all(age <= 18 for age in named_ages)
+
+
 def _safe_pcs_url(url):
     """Keep the endpoint useful in logs without recording query parameters."""
     parsed = urllib.parse.urlsplit(url or '')
@@ -112,13 +117,18 @@ def _pcs_result_source_url(pcs_race, stage_number=None):
     parsed_url = urllib.parse.urlsplit(pcs_race.result_url or '')
     if parsed_url.scheme != 'https' or parsed_url.hostname not in {'procyclingstats.com', 'www.procyclingstats.com'}:
         raise PcsParseError('This PCS result link is not a valid ProCyclingStats URL.')
+    path = urllib.parse.urlsplit(pcs_race.pcs_race_path or parsed_url.path).path.rstrip('/')
+    path = re.sub(r'-(\d{4})-re?$', r'-\1', path, flags=re.IGNORECASE)
+    path = re.sub(r'-(?:res(?:u(?:l(?:t)?)?)?|gc)$', '', path, flags=re.IGNORECASE)
+    path = re.sub(r'-stage-\d+$', '', path, flags=re.IGNORECASE)
     if stage_number is not None:
         if not 0 <= int(stage_number) <= 99:
             raise PcsParseError('Invalid PCS stage number.')
-        path = urllib.parse.urlsplit(pcs_race.pcs_race_path or parsed_url.path).path.rstrip('/')
-        path = re.sub(r'-(?:result|gc)$', '', path, flags=re.IGNORECASE)
-        path = re.sub(r'-stage-\d+$', '', path, flags=re.IGNORECASE)
         parsed_url = parsed_url._replace(path=f'{path}-stage-{int(stage_number)}', query='')
+    else:
+        # PCS sometimes leaves an incomplete ``-resu`` suffix in stored links.
+        # Always open the stable base race page from the canonical race path.
+        parsed_url = parsed_url._replace(path=path, query='')
     return urllib.parse.urlunsplit(parsed_url)
 
 
@@ -130,6 +140,7 @@ def _deserialize_pcs_result_page(payload):
     values = dict(payload or {})
     values.pop('_pcs_route_metadata_version', None)
     values.pop('_pcs_result_state', None)
+    values.pop('_parcours_type_manual', None)
     # Older cached payloads contain an always-empty Profile field.
     values.pop('profile', None)
     values['rows'] = [PcsRaceResultRow(**row) for row in values.get('rows', [])]
@@ -245,10 +256,26 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
             if parcours_type_column_available:
                 parsed_result.parcours_type = stored_page.parcours_type
             nation_name = canonical_nationality(parsed_result.nation_name)
+            race_changed = False
             if nation_name and nation_name != pcs_race.nation_name:
                 pcs_race.nation_name = nation_name
+                race_changed = True
+            if (
+                stage_number is None
+                and _result_is_junior(parsed_result)
+                and not pcs_race.is_junior_race
+            ):
+                pcs_race.is_junior_race = True
+                race_changed = True
+            if race_changed:
                 db.session.commit()
             return parsed_result
+
+    if not parcours_type_column_available:
+        raise RuntimeError(
+            'PCS route-profile storage is not installed; refusing to cache a new '
+            'result profile in the JSON payload.'
+        )
 
     parsed_url = urllib.parse.urlsplit(_pcs_result_source_url(pcs_race, stage_number))
     request_url = urllib.parse.urlunsplit((
@@ -273,7 +300,22 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
             raise PcsParseError('The PCS result link redirected outside ProCyclingStats.')
         page_html = response.read().decode('utf-8', errors='replace')
     parsed_result = parse_pcs_race_results_html(page_html, source_url=request_url)
+    result_is_junior = stage_number is None and _result_is_junior(parsed_result)
+    manual_profile = bool(
+        stored_page is not None
+        and (stored_page.payload or {}).get('_parcours_type_manual')
+    )
+    if manual_profile and parcours_type_column_available:
+        parsed_result.parcours_type = stored_page.parcours_type
     time_trial_value = pcs_time_trial_type(parsed_result.stage_type)
+    if (
+        time_trial_column_available
+        and time_trial_value in {None, 'TTT'}
+        and stored_page is not None
+        and stored_page.time_trial_type == 'ITT'
+    ):
+        # Keep a manually marked time trial when PCS omits or marks it as a TTT.
+        time_trial_value = 'ITT'
     if time_trial_column_available:
         parsed_result.time_trial_type = time_trial_value
     no_result_rows = not parsed_result.rows
@@ -294,6 +336,8 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
         payload['_pcs_result_state'] = _EMPTY_RESULT_STATE
     if stage_number is None:
         payload['_pcs_route_metadata_version'] = 1
+    if manual_profile:
+        payload['_parcours_type_manual'] = True
     stored_page = stored_page or PcsRaceResultPage(
         pcs_race_id=pcs_race.id, stage_key=stage_key,
     )
@@ -308,6 +352,9 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
     if nation_name:
         pcs_race.nation_name = nation_name
         db.session.add(pcs_race)
+    if result_is_junior:
+        pcs_race.is_junior_race = True
+        db.session.add(pcs_race)
     db.session.add(stored_page)
     try:
         if parsed_result.rows:
@@ -321,6 +368,9 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
         ).first()
         if stored_page is None:
             raise
+        if result_is_junior:
+            pcs_race.is_junior_race = True
+            db.session.add(pcs_race)
         stored_page.source_url = request_url
         stored_page.payload = payload
         stored_page.fetched_at = datetime.utcnow()

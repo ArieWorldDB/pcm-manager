@@ -75,6 +75,10 @@ def init_extensions(app):
             'task': 'webapp.tasks.check_pcs_unconfirmed_slugs_daily',
             'schedule': crontab(hour=0, minute=30),
         },
+        'prune-empty-pcs-races-weekly': {
+            'task': 'webapp.tasks.prune_empty_pcs_races_weekly',
+            'schedule': crontab(day_of_week=1, hour=5, minute=0),
+        },
         'recover-pcs-shared-results': {
             'task': 'webapp.tasks.recover_pcs_shared_results',
             'schedule': app.config.get('PCS_SYNC_RECOVERY_INTERVAL_SECONDS', 5.0),

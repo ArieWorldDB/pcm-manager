@@ -19,6 +19,7 @@ class PcsRaceCalendar(MainDBModel):
     category_label = db.Column(db.String(40), nullable=False)
     name = db.Column(db.String(255), nullable=False, index=True)
     classification = db.Column(db.String(40), nullable=True, index=True)
+    is_junior_race = db.Column(db.Boolean, nullable=False, default=False, server_default=db.false())
     nation_name = db.Column(db.String(100), nullable=True, index=True)
     start_date = db.Column(db.Date, nullable=True, index=True)
     end_date = db.Column(db.Date, nullable=True)

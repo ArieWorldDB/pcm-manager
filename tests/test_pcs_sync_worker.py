@@ -17,6 +17,14 @@ def test_daily_shared_results_run_at_1930_amsterdam_time(app):
     assert schedule.minute == {30}
 
 
+def test_empty_pcs_race_cleanup_runs_weekly_on_monday(app):
+    schedule = celery.conf.beat_schedule['prune-empty-pcs-races-weekly']['schedule']
+    assert celery.conf.timezone == 'Europe/Amsterdam'
+    assert schedule.day_of_week == {1}
+    assert schedule.hour == {5}
+    assert schedule.minute == {0}
+
+
 def test_daily_job_does_not_start_before_manual_install(monkeypatch):
     monkeypatch.setattr(sync_jobs, 'sync_storage_ready', lambda: False)
     monkeypatch.setattr(sync_jobs, 'create_sync_job', lambda **_kwargs: (_ for _ in ()).throw(AssertionError()))

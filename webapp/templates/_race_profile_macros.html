@@ -1,0 +1,17 @@
+{% macro race_profile_icon(profile, size=30) -%}
+    {% set label = (profile or '')|trim %}
+    {% set normalized = label|lower %}
+    {% if not label or normalized in ['none', 'null', '-'] %}<img class="race-profile-icon profile-icon-unknown" src="{{ url_for('static', filename='images/race-profiles/Icon_no.webp') }}" alt="Unknown profile" title="Unknown profile" width="{{ size }}" height="{{ size }}" loading="lazy" referrerpolicy="no-referrer">
+    {% else %}
+        {% if 'mountain' in normalized %}
+            {% set icon = url_for('static', filename='images/race-profiles/Icon_MTNa.webp') if 'uphill' in normalized else url_for('static', filename='images/race-profiles/Icon_MTN.webp') %}
+        {% elif 'hill' in normalized %}
+            {% set icon = url_for('static', filename='images/race-profiles/Icon_HILa.webp') if 'uphill' in normalized else url_for('static', filename='images/race-profiles/Icon_HIL.webp') %}
+        {% elif 'flat' in normalized %}
+            {% set icon = url_for('static', filename='images/race-profiles/Icon_FLA.webp') %}
+        {% else %}
+            {% set icon = none %}
+        {% endif %}
+        {% if icon %}<img class="race-profile-icon" src="{{ icon }}" alt="{{ label }}" title="{{ label }}" width="{{ size }}" height="{{ size }}" loading="lazy">{% else %}-{% endif %}
+    {% endif %}
+{%- endmacro %}

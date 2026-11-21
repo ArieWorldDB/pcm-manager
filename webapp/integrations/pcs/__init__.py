@@ -13,6 +13,7 @@ except ImportError:  # pragma: no cover - exercised only when dependency is miss
 from sqlalchemy import create_engine, text
 
 from webapp.extensions import db
+from webapp.integrations.nationality import canonical_nationality
 
 logger = logging.getLogger('pcs')
 
@@ -247,6 +248,8 @@ def _extract_race_metadata(soup):
                     if nation_name and nation_name.lower() != 'all nations':
                         metadata['nation_name'] = nation_name
                         break
+            if not metadata.get('nation_name'):
+                metadata['nation_name'] = canonical_nationality(country_code)
     return metadata
 
 
@@ -260,7 +263,7 @@ def _extract_stage_metadata(soup):
         metadata['stage_number'] = int(stage_match.group(1))
     distance_match = re.search(r'\((\d+(?:[.,]\d+)?)\s*km\)', subtitle_text, re.I)
     if distance_match:
-        metadata['distance_km'] = float(distance_match.group(1).replace(',', '.'))
+        metadata['distance_km'] = round(float(distance_match.group(1).replace(',', '.')), 1)
     locations = re.search(r'\bStage\s+\d+\s*[»>]\s*(.*?)\s*[›>]\s*(.*?)\s*(?:\(\d+(?:[.,]\d+)?\s*km\))?$', subtitle_text, re.I)
     if locations:
         metadata['start_location'] = _clean_text(locations.group(1))
@@ -279,7 +282,7 @@ def _extract_stage_metadata(soup):
         elif label_text == 'distance' and value and 'distance_km' not in metadata:
             distance_value = re.search(r'\d+(?:[.,]\d+)?', value)
             if distance_value:
-                metadata['distance_km'] = float(distance_value.group().replace(',', '.'))
+                metadata['distance_km'] = round(float(distance_value.group().replace(',', '.')), 1)
         elif label_text in {'departure', 'from', 'start'} and value:
             metadata['start_location'] = value
         elif label_text in {'arrival', 'to', 'finish'} and value:
