@@ -14,7 +14,7 @@ data; `main` holds shared application data, while `namespace` databases are isol
 - `webapp/integrations/`, `webapp/worker.py`: integrations and async work.
 - `tests/`: PostgreSQL access, namespace, and CDB release regression tests.
 - `docker/`, `docker-compose.yml`: local services; `.github/workflows/`: CI.
-- `migrations/`: manual schema scripts; `contribution.md`: branch and PR workflow.
+- `migrations/`: versioned schema scripts; `contribution.md`: branch and PR workflow.
 
 ## Setup and verification
 Run from the repository root with Docker and Docker Compose. All Python setup
@@ -92,8 +92,9 @@ changes, verify referenced paths/commands and run `git diff --check`.
   refactoring or dependency changes. Discuss broad architectural changes first.
 - Never weaken permissions, validation, tests, lint/security checks, or CI settings
   to make a change pass. Fix the cause or report the blocker.
-- Do not access production databases or execute migrations. For necessary schema
-  changes, provide a manual script and document the target (`main` or `namespace`)
-  and operator steps for review. Do not introduce automatic migration workflows.
+- Never access production databases. For schema changes, add a versioned script in
+  `migrations/`, identify its target (`main` or `namespace`), and execute it only
+  against a non-production database when the user has authorized that execution.
+  Keep schema changes out of automatic application-startup workflows.
 - Keep worker changes limited to the requested behavior; use synthetic data and
   mocked external services in tests. Preserve secrets and namespace boundaries.

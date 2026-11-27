@@ -1,17 +1,18 @@
 """Fetch and store PCS national race calendar entries with results."""
 import logging
 import re
-import time
 from calendar import monthrange
 from datetime import date, datetime
 from urllib.parse import urlencode, urljoin, urlsplit
-from urllib.request import Request, urlopen
+
+from curl_cffi import requests as curl_requests
 
 from bs4 import BeautifulSoup
 from sqlalchemy import func, text
 
 from webapp.extensions import db
 from webapp.integrations.nationality import canonical_nationality
+from webapp.integrations.pcs import http as pcs_http
 from webapp.models.main.pcs import PcsRaceCalendar
 
 logger = logging.getLogger('pcs.calendar')
@@ -28,11 +29,35 @@ class PcsCalendarError(Exception):
 
 
 def _fetch(url):
-    request = Request(url, headers={'User-Agent': 'JKL 4.1 Downtown'})
-    with urlopen(request, timeout=25) as response:
-        if response.status != 200:
-            raise PcsCalendarError(f'PCS returned HTTP {response.status}')
-        return response.read().decode('utf-8', errors='replace')
+    request_url = url
+    for _ in range(10):
+        parsed = urlsplit(request_url)
+        if parsed.scheme != 'https' or parsed.hostname not in {
+            'www.procyclingstats.com', 'procyclingstats.com',
+        }:
+            raise PcsCalendarError('PCS calendar redirected outside its approved HTTPS host.')
+        response = pcs_http.get(
+            request_url,
+            headers={'Accept': 'text/html'},
+            timeout=25,
+            impersonate='chrome',
+            allow_redirects=False,
+        )
+        if response.status_code in {301, 302, 303, 307, 308}:
+            location = response.headers.get('Location')
+            if location:
+                request_url = urljoin(request_url, location)
+                continue
+        if response.url:
+            final = urlsplit(response.url)
+            if final.scheme != 'https' or final.hostname not in {
+                'www.procyclingstats.com', 'procyclingstats.com',
+            }:
+                raise PcsCalendarError('PCS calendar redirected outside its approved HTTPS host.')
+        if response.status_code != 200:
+            raise PcsCalendarError(f'PCS returned HTTP {response.status_code}')
+        return response.content.decode('utf-8', errors='replace')
+    raise PcsCalendarError('PCS calendar exceeded the redirect limit.')
 
 
 def _safe_race_path(href, year, *, allow_reused_slug=False):
@@ -51,7 +76,8 @@ def _safe_race_path(href, year, *, allow_reused_slug=False):
 def _canonical_race_path(path):
     """Treat PCS result, GC, and truncated result suffixes as race aliases."""
     canonical = re.sub(r'-(\d{4})-re?$', r'-\1', path or '', flags=re.IGNORECASE)
-    return re.sub(r'-(?:res(?:u(?:l(?:t)?)?)?|gc)$', '', canonical, flags=re.IGNORECASE)
+    canonical = re.sub(r'-(?:res(?:u(?:l(?:t)?)?)?|gc)$', '', canonical, flags=re.IGNORECASE)
+    return re.sub(r'-(\d{4})-$', r'-\1', canonical)
 
 
 def _find_existing_race(path, year):
@@ -61,8 +87,10 @@ def _find_existing_race(path, year):
         PcsRaceCalendar.season_year == year,
         func.regexp_replace(
             func.regexp_replace(
-                PcsRaceCalendar.pcs_race_path, r'-(\d{4})-re?$', r'-\1', 'i',
-            ), r'-(res(u(l(t)?)?)?|gc)$', '', 'i',
+                func.regexp_replace(
+                    PcsRaceCalendar.pcs_race_path, r'-(\d{4})-re?$', r'-\1', 'i',
+                ), r'-(res(u(l(t)?)?)?|gc)$', '', 'i',
+            ), r'-(\d{4})-$', r'-\1',
         ) == canonical_path,
     ).order_by(
         (PcsRaceCalendar.pcs_race_path != canonical_path).asc(),
@@ -266,6 +294,7 @@ def parse_championship_race_calendar(html, *, year):
 
 def sync_championship_race_calendar(*, year=None):
     """Fetch and upsert the PCS World Championships calendar for one year."""
+    pcs_http.ensure_pcs_fetch_allowed()
     year = int(year or date.today().year)
     url = f'{PCS_BASE_URL}/races.php?{urlencode({"s": "championships", "year": year, "filter": "Filter"})}'
     summary = {'requested': 1, 'synced': 0, 'failed': 0, 'races': 0, 'errors': []}
@@ -358,8 +387,12 @@ def uci_calendar_storage_ready():
         )).scalar_one()
 
 
-def sync_uci_race_calendar(*, year=None, circuit_codes=None, sleep_seconds=1.0):
-    """Fetch UCI circuit calendars and persist race membership without touching results."""
+def sync_uci_race_calendar(*, year=None, circuit_codes=None, sleep_seconds=None):
+    """Fetch UCI calendars; request spacing is applied by the shared PCS client.
+
+    ``sleep_seconds`` remains accepted for compatibility with existing callers.
+    """
+    pcs_http.ensure_pcs_fetch_allowed()
     year = int(year or date.today().year)
     circuit_codes = list(UCI_CIRCUIT_CODES if circuit_codes is None else circuit_codes)
     if not circuit_codes or any(code not in UCI_CIRCUIT_CODES for code in circuit_codes):
@@ -416,13 +449,15 @@ def sync_uci_race_calendar(*, year=None, circuit_codes=None, sleep_seconds=1.0):
             summary['failed'] += 1
             summary['errors'].append({'circuit_code': circuit_code, 'error': str(exc)[:300]})
             logger.exception('PCS UCI circuit calendar sync failed for %s/%s', year, circuit_code)
-        if sleep_seconds and circuit_code != circuit_codes[-1]:
-            time.sleep(sleep_seconds)
     return summary
 
 
-def sync_national_races(*, year=None, months=None, category_codes=None, sleep_seconds=1.0):
-    """Scan PCS national race pages and upsert published results for supported categories."""
+def sync_national_races(*, year=None, months=None, category_codes=None, sleep_seconds=None):
+    """Scan national calendars; request spacing is applied by the shared PCS client.
+
+    ``sleep_seconds`` remains accepted for compatibility with existing callers.
+    """
+    pcs_http.ensure_pcs_fetch_allowed()
     year = int(year or date.today().year)
     months = list(months or range(1, 13))
     category_codes = list(CATEGORIES if category_codes is None else category_codes)
@@ -477,6 +512,4 @@ def sync_national_races(*, year=None, months=None, category_codes=None, sleep_se
                 summary['failed'] += 1
                 summary['errors'].append({'month': month, 'category': label, 'error': str(exc)[:300]})
                 logger.exception('PCS national calendar sync failed for %s/%s', year, month)
-            if sleep_seconds and (month != months[-1] or category_code != category_codes[-1]):
-                time.sleep(sleep_seconds)
     return summary

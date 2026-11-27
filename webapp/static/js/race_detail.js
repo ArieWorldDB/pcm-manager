@@ -369,7 +369,15 @@ document.addEventListener('DOMContentLoaded', function () {
                     }
                     [['classification', 'race-classification'], ['nation', 'race-nation'], ['distance', 'race-distance'], ['startLocation', 'race-from'], ['endLocation', 'race-to'], ['startDate', 'race-start-date']].forEach(function ([key, id]) {
                         const target = document.getElementById(id);
-                        if (metadata.dataset[key] && target) target.textContent = metadata.dataset[key];
+                        if (metadata.dataset[key] && target) {
+                            const distanceEditor = key === 'distance' && target.querySelector('.pcs-distance-value');
+                            if (distanceEditor) {
+                                distanceEditor.dataset.distanceValue = Number(metadata.dataset[key]).toFixed(1);
+                                distanceEditor.textContent = distanceEditor.dataset.distanceValue;
+                            } else {
+                                target.textContent = metadata.dataset[key];
+                            }
+                        }
                     });
                 }
                 initializeTable();

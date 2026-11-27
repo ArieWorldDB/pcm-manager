@@ -91,7 +91,11 @@ def initialize_database(log=None):
         # reviewed manual SQL, not implicitly during application startup.
         main_tables = [
             table for table in db.metadatas['main'].tables.values()
-            if table.name not in {'pcs_race_calendar', 'pcs_race_result_pages'}
+            if table.name not in {
+                'pcs_race_calendar',
+                'pcs_race_result_pages',
+                'pcs_firstcycling_race_matches',
+            }
         ]
         db.metadatas['main'].create_all(
             bind=db.engines['main'],

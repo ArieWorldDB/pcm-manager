@@ -26,6 +26,26 @@ def pcs_sync():
     """Start and inspect shared PCS result synchronization."""
 
 
+@pcs_sync.command('refresh-firstcycling-profiles')
+@with_appcontext
+def refresh_firstcycling_profiles():
+    """Refresh FC profiles and distances on pages with confirmed links."""
+    from webapp.integrations.pcs.firstcycling_profiles import fetch_confirmed_profiles
+
+    try:
+        summary = fetch_confirmed_profiles(log=click.echo)
+    except Exception as exc:
+        raise click.ClickException(str(exc)) from exc
+    click.echo(
+        'FC profile/distance refresh finished: '
+        f"{summary['races']} linked races, {summary['pages_updated']} pages updated, "
+        f"{summary['distance_pages_updated']} pages with distance checked "
+        f"({summary['missing_fc_distance']} without FC distance), "
+        f"{summary['missing_stage_profile']} pages without an FC profile, "
+        f"{summary['api_errors']} API errors."
+    )
+
+
 @pcs_sync.command('start-initial')
 @with_appcontext
 def start_initial():
@@ -89,6 +109,29 @@ def prune_empty_races(limit):
     from webapp.integrations.pcs.empty_race_cleanup import run_empty_race_cleanup
 
     summary = run_empty_race_cleanup(limit=limit)
+    click.echo(json.dumps(summary, ensure_ascii=False, indent=2))
+
+
+@pcs_sync.command('backfill-prologues')
+@click.option('--apply', 'apply_changes', is_flag=True,
+              help='Fetch existing multi-day race pages and any newly discovered prologue results.')
+@click.option('--request-delay', type=click.FloatRange(min=0), default=2.0,
+              help='Seconds to wait between PCS requests; defaults to 2.')
+@with_appcontext
+def backfill_prologues(apply_changes, request_delay):
+    """Discover prologues for existing multi-day PCS races (dry-run by default)."""
+    from webapp.integrations.pcs.prologue_backfill import backfill_multiday_prologues
+
+    def report_progress(index, total, current):
+        click.echo(
+            f"Checked {index}/{total} races; found {current['prologues_found']} prologues, "
+            f"fetched {current['prologue_requests']}, errors {len(current['errors'])}."
+        )
+
+    summary = backfill_multiday_prologues(
+        apply=apply_changes, request_delay_seconds=request_delay,
+        progress_callback=report_progress if apply_changes else None,
+    )
     click.echo(json.dumps(summary, ensure_ascii=False, indent=2))
 
 

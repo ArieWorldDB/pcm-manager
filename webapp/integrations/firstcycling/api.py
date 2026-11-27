@@ -647,6 +647,11 @@ class FirstCyclingClient:
         endpoint = f'rider/{rider_id}.json'
         return self._fetch_json(endpoint)
 
+    def get_race(self, season_year, race_id):
+        """Fetch one Dora race edition, including its stage profiles."""
+        endpoint = f'{int(season_year)}/{int(race_id)}.json'
+        return self._fetch_json(endpoint)
+
     def get_team(self, team_id):
         endpoint = f'team/{team_id}.json'
         return self._fetch_json(endpoint)

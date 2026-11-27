@@ -7,6 +7,9 @@ import urllib.parse
 import urllib.request
 from dataclasses import asdict
 from datetime import datetime
+from io import BytesIO
+
+from curl_cffi import requests as curl_requests
 
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy import text
@@ -21,14 +24,19 @@ from webapp.integrations.pcs import (
     parse_pcs_race_results_html,
 )
 from webapp.integrations.pcs.shared_results import replace_page_entries
+from webapp.integrations.pcs import http as pcs_http
 from webapp.integrations.pcs import pcs_time_trial_type
 from webapp.integrations.pcs.schema import (
     pcs_parcours_type_column_available,
     pcs_time_trial_type_column_available,
+    pcs_profile_precedence_columns_available,
+    pcs_source_distance_column_available,
 )
+from webapp.integrations.pcs.profile_precedence import apply_page_precedence
 from webapp.models.main.pcs import PcsRaceResultPage
 
 _EMPTY_RESULT_STATE = 'no_result_rows'
+_TEAM_RESULT_STATE = 'team_result_only'
 logger = logging.getLogger('pcs.result_pages')
 
 
@@ -113,27 +121,111 @@ def _log_pcs_http_error(request_obj, exc):
     )
 
 
-def _pcs_result_source_url(pcs_race, stage_number=None):
+def _pcs_result_source_url(pcs_race, stage_number=None, *, stage_path=None):
     parsed_url = urllib.parse.urlsplit(pcs_race.result_url or '')
     if parsed_url.scheme != 'https' or parsed_url.hostname not in {'procyclingstats.com', 'www.procyclingstats.com'}:
         raise PcsParseError('This PCS result link is not a valid ProCyclingStats URL.')
     path = urllib.parse.urlsplit(pcs_race.pcs_race_path or parsed_url.path).path.rstrip('/')
     path = re.sub(r'-(\d{4})-re?$', r'-\1', path, flags=re.IGNORECASE)
     path = re.sub(r'-(?:res(?:u(?:l(?:t)?)?)?|gc)$', '', path, flags=re.IGNORECASE)
-    path = re.sub(r'-stage-\d+$', '', path, flags=re.IGNORECASE)
+    path = re.sub(r'-(?:stage-\d+[a-z]?|prologue)$', '', path, flags=re.IGNORECASE)
+    path = re.sub(r'-(\d{4})-$', r'-\1', path)
     if stage_number is not None:
-        if not 0 <= int(stage_number) <= 99:
+        stage_id = str(stage_number).strip().lower()
+        match = re.fullmatch(r'(0|[1-9]\d?)([a-z]?)', stage_id)
+        if not match or int(match.group(1)) > 99:
             raise PcsParseError('Invalid PCS stage number.')
-        parsed_url = parsed_url._replace(path=f'{path}-stage-{int(stage_number)}', query='')
+        if not stage_path:
+            cached_stage = _cached_pcs_stage(pcs_race, stage_id)
+            stage_path = cached_stage.get('path') if cached_stage else None
+        if stage_path:
+            stage_route = urllib.parse.urlsplit(str(stage_path))
+            if (
+                stage_route.scheme or stage_route.netloc
+                or not stage_route.path.startswith('/race/')
+                or stage_route.query or stage_route.fragment
+                or '..' in stage_route.path.split('/')
+            ):
+                raise PcsParseError('This PCS stage path is not a valid race path.')
+            parsed_url = parsed_url._replace(path=stage_route.path, query='')
+        else:
+            generated_path = f'{path}-prologue' if int(match.group(1)) == 0 else f'{path}-stage-{stage_id}'
+            parsed_url = parsed_url._replace(path=generated_path, query='')
     else:
         # PCS sometimes leaves an incomplete ``-resu`` suffix in stored links.
-        # Always open the stable base race page from the canonical race path.
+        # Use the explicit result view for one-day races and the GC view for
+        # stage races; the bare race path may be a 404 or default to a stage.
+        if _is_multiday_overall_page(pcs_race, None):
+            path = f'{path}-gc'
+        elif not path.endswith('-'):
+            path = f'{path}-result'
         parsed_url = parsed_url._replace(path=path, query='')
     return urllib.parse.urlunsplit(parsed_url)
 
 
 def _pcs_result_page_key(stage_number=None):
-    return f'stage:{stage_number}' if stage_number is not None else 'overall'
+    return f'stage:{str(stage_number).strip().lower()}' if stage_number is not None else 'overall'
+
+
+def _pcs_stage_identity(stage):
+    """Prefer PCS's displayed stage identity while retaining its exact route."""
+    name = str(stage.get('name') or '').strip()
+    if re.fullmatch(r'prologue', name, re.IGNORECASE):
+        return '0'
+    label_match = re.match(r'^Stage\s+(\d+)([a-z]?)\b', name, re.IGNORECASE)
+    if label_match:
+        return f'{label_match.group(1)}{label_match.group(2).lower()}'
+    stage_id = stage.get('stage_id')
+    if stage_id is not None:
+        return str(stage_id).strip().lower()
+    stage_number = stage.get('stage_number')
+    return str(stage_number).strip().lower() if stage_number is not None else None
+
+
+def _cached_pcs_stage(pcs_race, requested_stage_id):
+    """Resolve an input stage ID to the PCS stage entry and its original path."""
+    overall_page = PcsRaceResultPage.query.filter_by(
+        pcs_race_id=pcs_race.id, stage_key='overall',
+    ).first()
+    stages = (overall_page.payload or {}).get('stages') or [] if overall_page else []
+    requested = str(requested_stage_id).strip().lower()
+    stage_entries = [stage for stage in stages if not stage.get('is_overall')]
+
+    exact = [stage for stage in stage_entries if _pcs_stage_identity(stage) == requested]
+    if len(exact) == 1:
+        return exact[0]
+
+    # Older overall caches may lack stage_id even when the route code is the
+    # only identifier passed by a caller. Match the route suffix as fallback.
+    route_matches = []
+    for stage in stage_entries:
+        route_path = urllib.parse.unquote(str(stage.get('path') or ''))
+        route_match = re.search(r'-(?:stage-(\d+[a-z]?)|prologue)$', route_path, re.IGNORECASE)
+        route_id = (
+            '0' if route_match and route_match.group(1) is None
+            else route_match.group(1).lower() if route_match else None
+        )
+        if route_id == requested:
+            route_matches.append(stage)
+    if len(route_matches) == 1:
+        return route_matches[0]
+    return None
+
+
+def _is_multiday_overall_page(pcs_race, stage_number):
+    return bool(
+        stage_number is None
+        and pcs_race.start_date
+        and pcs_race.end_date
+        and pcs_race.end_date > pcs_race.start_date
+    )
+
+
+def _clear_stage_metadata_from_multiday_overall(parsed_result):
+    """A GC page must not inherit the currently selected stage's TT/km metadata."""
+    parsed_result.distance_km = None
+    parsed_result.stage_type = None
+    parsed_result.time_trial_type = None
 
 
 def _deserialize_pcs_result_page(payload):
@@ -183,7 +275,7 @@ def project_cached_pages_batch(*, after_id=0, limit=100):
                 .filter(text('NOT EXISTS (SELECT 1 FROM pcs_shared_result_entries e '
                              'WHERE e.page_id = pcs_race_result_pages.id)'))
                 .filter(text("COALESCE(pcs_race_result_pages.payload->>'_pcs_result_state', '') "
-                             "<> 'no_result_rows'"))
+                             "NOT IN ('no_result_rows', 'team_result_only')"))
                 .order_by(PcsRaceResultPage.id)
                 .with_for_update()
                 .first())
@@ -212,7 +304,7 @@ def project_one_cached_race_page(pcs_race_id):
             .filter(text('NOT EXISTS (SELECT 1 FROM pcs_shared_result_entries e '
                          'WHERE e.page_id = pcs_race_result_pages.id)'))
             .filter(text("COALESCE(pcs_race_result_pages.payload->>'_pcs_result_state', '') "
-                         "<> 'no_result_rows'"))
+                         "NOT IN ('no_result_rows', 'team_result_only')"))
             .order_by(PcsRaceResultPage.id)
             .with_for_update()
             .first())
@@ -226,21 +318,36 @@ def project_one_cached_race_page(pcs_race_id):
     return page_id
 
 
-def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
+def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False, stage_path=None):
     """Load the shared stored PCS result, fetching only when missing or refreshed."""
+    if stage_number is not None:
+        pcs_stage = _cached_pcs_stage(pcs_race, stage_number)
+        if pcs_stage:
+            stage_number = _pcs_stage_identity(pcs_stage)
+            stage_path = stage_path or pcs_stage.get('path')
     stage_key = _pcs_result_page_key(stage_number)
     page_query = PcsRaceResultPage.query.filter_by(
         pcs_race_id=pcs_race.id, stage_key=stage_key,
     )
     time_trial_column_available = pcs_time_trial_type_column_available()
     parcours_type_column_available = pcs_parcours_type_column_available()
+    source_distance_column_available = pcs_source_distance_column_available()
+    precedence_columns_available = pcs_profile_precedence_columns_available()
     if time_trial_column_available:
         page_query = page_query.options(undefer(PcsRaceResultPage.time_trial_type))
     if parcours_type_column_available:
         page_query = page_query.options(undefer(PcsRaceResultPage.parcours_type))
+    if precedence_columns_available:
+        page_query = page_query.options(
+            undefer(PcsRaceResultPage.firstcycling_profile),
+            undefer(PcsRaceResultPage.manual_parcours_type),
+            undefer(PcsRaceResultPage.manual_profile_override),
+            undefer(PcsRaceResultPage.manual_time_trial_type_override),
+        )
     stored_page = page_query.first()
     if stored_page is not None and not force_refresh:
         cached_payload = stored_page.payload or {}
+        multiday_overall = _is_multiday_overall_page(pcs_race, stage_number)
         is_single_day_race = bool(
             stage_number is None and pcs_race.start_date and pcs_race.end_date
             and pcs_race.start_date == pcs_race.end_date
@@ -251,8 +358,22 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
         )
         if not needs_route_metadata_refresh:
             parsed_result = _deserialize_pcs_result_page(cached_payload)
+            metadata_changed = False
+            if multiday_overall:
+                if parsed_result.distance_km is not None or parsed_result.stage_type is not None:
+                    cached_payload = dict(cached_payload)
+                    cached_payload['distance_km'] = None
+                    cached_payload['stage_type'] = None
+                    stored_page.payload = cached_payload
+                    metadata_changed = True
+                _clear_stage_metadata_from_multiday_overall(parsed_result)
             if time_trial_column_available:
-                parsed_result.time_trial_type = stored_page.time_trial_type
+                parsed_result.time_trial_type = (
+                    None if multiday_overall else stored_page.time_trial_type
+                )
+                if multiday_overall and stored_page.time_trial_type is not None:
+                    stored_page.time_trial_type = None
+                    metadata_changed = True
             if parcours_type_column_available:
                 parsed_result.parcours_type = stored_page.parcours_type
             nation_name = canonical_nationality(parsed_result.nation_name)
@@ -267,9 +388,12 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
             ):
                 pcs_race.is_junior_race = True
                 race_changed = True
-            if race_changed:
+            if race_changed or metadata_changed:
                 db.session.commit()
-            return parsed_result
+            return (
+                apply_page_precedence(parsed_result, stored_page)
+                if precedence_columns_available else parsed_result
+            )
 
     if not parcours_type_column_available:
         raise RuntimeError(
@@ -277,7 +401,9 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
             'result profile in the JSON payload.'
         )
 
-    parsed_url = urllib.parse.urlsplit(_pcs_result_source_url(pcs_race, stage_number))
+    parsed_url = urllib.parse.urlsplit(
+        _pcs_result_source_url(pcs_race, stage_number, stage_path=stage_path)
+    )
     request_url = urllib.parse.urlunsplit((
         parsed_url.scheme,
         parsed_url.netloc,
@@ -287,29 +413,43 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
     ))
     request_obj = urllib.request.Request(
         request_url,
-        headers={'User-Agent': 'JKL 4.1 Downtown', 'Accept': 'text/html'},
+        headers={'Accept': 'text/html'},
     )
-    try:
-        response_context = urllib.request.urlopen(request_obj, timeout=20)
-    except urllib.error.HTTPError as exc:
-        _log_pcs_http_error(request_obj, exc)
-        raise
-    with response_context as response:
-        final_url = urllib.parse.urlsplit(response.geturl())
-        if final_url.scheme != 'https' or final_url.hostname not in {'procyclingstats.com', 'www.procyclingstats.com'}:
-            raise PcsParseError('The PCS result link redirected outside ProCyclingStats.')
-        page_html = response.read().decode('utf-8', errors='replace')
+    response = pcs_http.get(
+        request_url,
+        headers={'Accept': 'text/html'},
+        timeout=20,
+        impersonate='chrome',
+    )
+    if response.status_code >= 400:
+        error = urllib.error.HTTPError(
+            response.url,
+            response.status_code,
+            getattr(response, 'reason', '') or '',
+            response.headers,
+            BytesIO(response.content),
+        )
+        _log_pcs_http_error(request_obj, error)
+        raise error
+    final_url = urllib.parse.urlsplit(response.url)
+    if final_url.scheme != 'https' or final_url.hostname not in {'procyclingstats.com', 'www.procyclingstats.com'}:
+        raise PcsParseError('The PCS result link redirected outside ProCyclingStats.')
+    page_html = response.content.decode('utf-8', errors='replace')
     parsed_result = parse_pcs_race_results_html(page_html, source_url=request_url)
+    multiday_overall = _is_multiday_overall_page(pcs_race, stage_number)
+    if multiday_overall:
+        _clear_stage_metadata_from_multiday_overall(parsed_result)
     result_is_junior = stage_number is None and _result_is_junior(parsed_result)
     manual_profile = bool(
         stored_page is not None
         and (stored_page.payload or {}).get('_parcours_type_manual')
     )
-    if manual_profile and parcours_type_column_available:
+    if manual_profile and parcours_type_column_available and not precedence_columns_available:
         parsed_result.parcours_type = stored_page.parcours_type
-    time_trial_value = pcs_time_trial_type(parsed_result.stage_type)
+    time_trial_value = None if multiday_overall else pcs_time_trial_type(parsed_result.stage_type)
     if (
-        time_trial_column_available
+        not multiday_overall and time_trial_column_available
+        and not precedence_columns_available
         and time_trial_value in {None, 'TTT'}
         and stored_page is not None
         and stored_page.time_trial_type == 'ITT'
@@ -322,7 +462,7 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
     previous_rows = (stored_page.payload or {}).get('rows') or [] if stored_page else []
     if no_result_rows and previous_rows:
         raise PcsParseError('PCS returned an empty result; the previous result was retained.')
-    if force_refresh and stored_page is not None:
+    if force_refresh and stored_page is not None and not multiday_overall:
         if len(parsed_result.rows) < len(previous_rows):
             raise PcsParseError(
                 'PCS returned fewer result rows than before; the previous result was retained for review.'
@@ -333,10 +473,12 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
     if time_trial_column_available and time_trial_value:
         payload.pop('stage_type', None)
     if no_result_rows:
-        payload['_pcs_result_state'] = _EMPTY_RESULT_STATE
+        payload['_pcs_result_state'] = (
+            _TEAM_RESULT_STATE if payload.get('team_results') else _EMPTY_RESULT_STATE
+        )
     if stage_number is None:
         payload['_pcs_route_metadata_version'] = 1
-    if manual_profile:
+    if manual_profile and not precedence_columns_available:
         payload['_parcours_type_manual'] = True
     stored_page = stored_page or PcsRaceResultPage(
         pcs_race_id=pcs_race.id, stage_key=stage_key,
@@ -344,6 +486,8 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
     stored_page.source_url = request_url
     stored_page.payload = payload
     stored_page.fetched_at = datetime.utcnow()
+    if source_distance_column_available:
+        stored_page.source_distance_km = parsed_result.distance_km
     if time_trial_column_available:
         stored_page.time_trial_type = time_trial_value
     if parcours_type_column_available:
@@ -374,6 +518,8 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
         stored_page.source_url = request_url
         stored_page.payload = payload
         stored_page.fetched_at = datetime.utcnow()
+        if source_distance_column_available:
+            stored_page.source_distance_km = parsed_result.distance_km
         if time_trial_column_available:
             stored_page.time_trial_type = time_trial_value
         if parcours_type_column_available:
@@ -381,4 +527,7 @@ def _fetch_pcs_race_result(pcs_race, stage_number=None, *, force_refresh=False):
         if parsed_result.rows:
             _write_shared_entries_if_installed(stored_page, pcs_race, parsed_result)
         db.session.commit()
-    return parsed_result
+    return (
+        apply_page_precedence(parsed_result, stored_page)
+        if precedence_columns_available else parsed_result
+    )

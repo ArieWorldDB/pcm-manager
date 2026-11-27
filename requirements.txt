@@ -18,10 +18,11 @@ marshmallow==3.26.2
 marshmallow-sqlalchemy==0.29.0
 flask-marshmallow==0.15.0
 beautifulsoup4==4.12.3
+curl_cffi==0.16.3
 Pillow==13.0.0
 
 # Background Jobs
-redis==5.0.1
+redis==6.1.0
 celery==5.3.4
 
 # Security

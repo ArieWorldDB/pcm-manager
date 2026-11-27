@@ -5,7 +5,9 @@
     {% set normalized = label|lower %}
     {% if not label or normalized in ['none', 'null', '-'] %}<img class="race-profile-icon profile-icon-unknown" src="{{ url_for('static', filename='images/race-profiles/Icon_no.webp') }}" alt="Unknown profile" title="Unknown profile" loading="lazy" referrerpolicy="no-referrer">
     {% else %}
-        {% if 'mountain' in normalized %}
+        {% if 'cobble' in normalized %}
+            {% set icon = url_for('static', filename='images/race-profiles/Icon_COB.webp') %}
+        {% elif 'mountain' in normalized %}
             {% set icon = url_for('static', filename='images/race-profiles/Icon_MTNa.webp') if 'uphill' in normalized else url_for('static', filename='images/race-profiles/Icon_MTN.webp') %}
         {% elif 'hill' in normalized %}
             {% set icon = url_for('static', filename='images/race-profiles/Icon_HILa.webp') if 'uphill' in normalized else url_for('static', filename='images/race-profiles/Icon_HIL.webp') %}
@@ -18,33 +20,371 @@
     {% endif %}
 {%- endmacro %}
 
+{% macro filter_icon(name, class_name='') -%}
+<svg class="filter-icon {{ class_name }}" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+    {% if name == 'search' %}
+    <circle cx="10.8" cy="10.8" r="6.8"></circle><path d="m16 16 5 5"></path>
+    {% elif name == 'edit' %}
+    <path d="M12 20h9 M16.5 3.5a2.1 2.1 0 0 1 3 3L8 18l-4 1 1-4Z"></path>
+    {% elif name == 'clock' %}
+    <circle cx="12" cy="12" r="9"></circle><path d="M12 7v5l3 2"></path>
+    {% elif name == 'check' %}
+    <circle cx="12" cy="12" r="9"></circle><path d="m8 12 2.5 2.5L16 9"></path>
+    {% elif name == 'reset' %}
+    <path d="M3 11a9 9 0 1 1 2.6 6.4 M3 4v7h7"></path>
+    {% endif %}
+</svg>
+{%- endmacro %}
+
 {% block title %}Stats Editor - WDB{% endblock %}
 {% block body_class %}stats-editor-page{% endblock %}
 
 {% block styles %}
     .filters-grid {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        align-items: flex-end;
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+        gap: 14px;
+        align-items: start;
     }
     .filter-item {
         min-width: 0;
     }
+    .filter-item:focus-within {
+        position: relative;
+        z-index: 10;
+    }
     .filter-item-compact {
-        width: 125px;
+        min-width: 0;
     }
     .filter-item-classification {
-        width: 170px;
+        min-width: 0;
     }
     .filter-item-date {
-        width: 170px;
+        min-width: 0;
     }
     .filter-item-checkbox {
-        width: 135px;
+        min-width: 0;
     }
     .filter-item-name {
-        width: 260px;
+        min-width: 0;
+    }
+    .filter-item select[multiple] {
+        min-height: 7.2rem;
+    }
+    .multi-select-widget {
+        position: relative;
+    }
+    .multi-select-trigger {
+        align-items: center;
+        background: var(--bs-body-bg, #fff);
+        border: 1px solid var(--bs-border-color, #dee2e6);
+        border-radius: .375rem;
+        color: var(--bs-body-color, #212529);
+        display: flex;
+        justify-content: space-between;
+        min-height: 38px;
+        padding: .375rem .75rem;
+        text-align: left;
+        width: 100%;
+    }
+    .multi-select-trigger:hover { border-color: #9aa4b2; }
+    .multi-select-trigger:focus-visible {
+        border-color: #86b7fe;
+        box-shadow: 0 0 0 .25rem rgba(13, 110, 253, .25);
+        outline: 0;
+    }
+    .multi-select-trigger::after {
+        border: solid currentColor;
+        border-width: 0 1.5px 1.5px 0;
+        content: '';
+        flex: 0 0 auto;
+        height: 7px;
+        margin-left: .75rem;
+        transform: rotate(45deg) translateY(-2px);
+        width: 7px;
+    }
+    .multi-select-trigger[aria-expanded="true"]::after {
+        transform: rotate(225deg) translate(-1px, -1px);
+    }
+    .multi-select-value {
+        overflow: hidden;
+        text-overflow: ellipsis;
+        white-space: nowrap;
+    }
+    .multi-select-panel {
+        background: var(--bs-body-bg, #fff);
+        border: 1px solid var(--bs-border-color, #dee2e6);
+        border-radius: .375rem;
+        box-shadow: 0 .5rem 1rem rgba(0, 0, 0, .15);
+        left: 0;
+        max-height: 18rem;
+        max-width: min(24rem, calc(100vw - 2rem));
+        min-width: 100%;
+        overflow-y: auto;
+        padding: .5rem;
+        position: absolute;
+        top: calc(100% + .25rem);
+        width: max-content;
+        z-index: 30;
+    }
+    .multi-select-search { margin-bottom: .5rem; }
+    .multi-select-search-wrap { position: relative; }
+    .multi-select-search-wrap .filter-icon {
+        color: var(--bs-secondary-color, #6c757d);
+        left: .6rem;
+        pointer-events: none;
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+    }
+    .multi-select-search-wrap .multi-select-search { padding-left: 2rem; }
+    .multi-select-mode {
+        align-items: center;
+        border-top: 1px solid var(--bs-border-color, #dee2e6);
+        display: flex;
+        gap: .5rem;
+        justify-content: space-between;
+        margin-top: .45rem;
+        padding-top: .5rem;
+    }
+    .multi-select-mode-label { color: var(--bs-secondary-color, #6c757d); font-size: .8rem; }
+    .multi-select-mode-options { display: inline-flex; gap: .25rem; }
+    .multi-select-mode-button {
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: .3rem;
+        color: var(--bs-secondary-color, #6c757d);
+        font-size: .8rem;
+        padding: .2rem .45rem;
+    }
+    .multi-select-mode-button[aria-pressed="true"] {
+        background: var(--brand-primary-soft, #e6edf5);
+        border-color: var(--brand-primary-border, #99a7ba);
+        color: var(--brand-primary, #002352);
+        font-weight: 600;
+    }
+    .multi-select-profile-icon {
+        flex: 0 0 22px;
+        height: 22px;
+        object-fit: contain;
+        width: 22px;
+    }
+    .multi-select-options {
+        max-height: 12rem;
+        overflow-y: auto;
+    }
+    .multi-select-option {
+        align-items: flex-start;
+        border-radius: .25rem;
+        cursor: pointer;
+        display: flex;
+        gap: .5rem;
+        line-height: 1.35;
+        padding: .25rem .35rem;
+    }
+    .multi-select-option:hover { background: var(--bs-tertiary-bg, #f1f3f5); }
+    .multi-select-option input { margin-top: .2rem; }
+    .multi-select-option span { overflow-wrap: anywhere; }
+    .multi-select-empty {
+        color: var(--bs-secondary-color, #6c757d);
+        padding: .4rem .35rem;
+    }
+    .multi-select-clear {
+        margin-top: .25rem;
+        padding: .2rem .25rem 0;
+        text-align: right;
+    }
+    body.dark-mode .multi-select-trigger,
+    body.dark-mode .multi-select-panel {
+        background: #232a36;
+        border-color: #4b5563;
+        color: #fff;
+    }
+    body.dark-mode .multi-select-option:hover { background: #374151; }
+    body.dark-mode .multi-select-search-wrap .filter-icon { color: #cbd5e1; }
+    .filter-mode {
+        margin-top: .4rem;
+    }
+    .filter-help {
+        color: var(--bs-secondary-color, #6c757d);
+        font-size: .8rem;
+        margin-top: .25rem;
+    }
+    .filter-statuses {
+        border: 0;
+        margin: 1rem 0 0;
+        min-width: 0;
+        padding: 0;
+    }
+    .filter-statuses legend {
+        color: var(--bs-secondary-color, #6c757d);
+        float: none;
+        font-size: .9rem;
+        font-weight: 600;
+        margin-bottom: .4rem;
+        width: auto;
+    }
+    .filter-icon {
+        display: inline-block;
+        flex: 0 0 auto;
+        height: 1rem;
+        vertical-align: middle;
+        width: 1rem;
+    }
+    .filter-search-control { position: relative; }
+    .filter-search-control .filter-icon {
+        color: var(--bs-secondary-color, #6c757d);
+        left: .75rem;
+        pointer-events: none;
+        position: absolute;
+        top: 50%;
+        transform: translateY(-50%);
+        z-index: 1;
+    }
+    .filter-search-control .form-control { padding-left: 2.25rem; }
+    .filter-status-icon { color: var(--brand-primary, #002352); display: inline-flex; }
+    .filter-status-options {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .5rem;
+    }
+    .filter-status-options .form-check {
+        align-items: center;
+        background: var(--bs-body-bg, #fff);
+        border: 1px solid var(--bs-border-color, #dee2e6);
+        border-radius: 999px;
+        display: inline-flex;
+        gap: .4rem;
+        margin: 0;
+        min-height: 38px;
+        padding: .35rem .8rem;
+    }
+    .filter-status-options .form-check-input { margin: 0; }
+    .filter-status-options .form-check-label { cursor: pointer; }
+    .filter-status-options .form-check:has(.form-check-input:checked) {
+        background: var(--brand-primary-soft, #e6edf5);
+        border-color: var(--brand-primary-border, #99a7ba);
+        color: var(--brand-primary, #002352);
+        font-weight: 600;
+    }
+    .filter-status-options .form-check:has(.form-check-input:checked) .filter-status-icon {
+        color: var(--brand-primary, #002352);
+    }
+    .selected-filter-summary {
+        border-top: 1px solid var(--bs-border-color, #dee2e6);
+        margin-top: 1rem;
+        padding-top: .75rem;
+    }
+    .selected-filter-heading {
+        color: var(--bs-secondary-color, #6c757d);
+        font-size: .8rem;
+        font-weight: 600;
+        margin-bottom: .4rem;
+    }
+    .selected-filter-chips {
+        display: flex;
+        flex-wrap: wrap;
+        gap: .4rem;
+    }
+    .selected-filter-chip {
+        align-items: center;
+        background: var(--brand-primary-soft, #e6edf5);
+        border: 1px solid var(--brand-primary-border, #99a7ba);
+        border-radius: 999px;
+        color: var(--brand-primary, #002352);
+        display: inline-flex;
+        gap: .4rem;
+        max-width: 100%;
+        padding: .2rem .65rem;
+    }
+    .selected-filter-chip-label { overflow-wrap: anywhere; }
+    .selected-filter-chip-remove {
+        background: transparent;
+        border: 0;
+        color: inherit;
+        font-size: 1rem;
+        line-height: 1;
+        padding: 0;
+    }
+    .selected-filter-chip-remove:focus-visible {
+        border-radius: .15rem;
+        outline: 2px solid currentColor;
+        outline-offset: 2px;
+    }
+    body.dark-mode .filter-status-options .form-check {
+        background: #232a36;
+        border-color: #4b5563;
+        color: #fff;
+    }
+    body.dark-mode .filter-status-options .form-check:has(.form-check-input:checked) {
+        background: #26374c;
+        border-color: #7890ad;
+        color: #fff;
+    }
+    body.dark-mode .selected-filter-chip {
+        background: #26374c;
+        border-color: #52657d;
+        color: #e6edf5;
+    }
+    .filter-actions {
+        align-items: center;
+        background: var(--bs-body-bg, #fff);
+        border-top: 1px solid var(--bs-border-color, #dee2e6);
+        bottom: 0;
+        display: flex;
+        gap: .5rem;
+        margin-top: 1rem;
+        padding: .75rem 0 .25rem;
+        position: sticky;
+        z-index: 4;
+    }
+    body.dark-mode .filter-actions { background: #232a36; }
+    @media (max-width: 575.98px) {
+        .stats-editor-page .filters-grid { grid-template-columns: minmax(0, 1fr); }
+        .filter-actions { align-items: stretch; flex-direction: column; }
+        .filter-actions .btn { width: 100%; }
+        .filter-status-options { display: grid; grid-template-columns: minmax(0, 1fr); }
+        .filter-status-options .form-check { border-radius: .375rem; }
+        .multi-select-panel { max-width: calc(100vw - 2rem); }
+    }
+    .additional-race-filters {
+        border-top: 1px solid var(--bs-border-color, #dee2e6);
+        margin-top: 1rem;
+        padding-top: .8rem;
+    }
+    .additional-race-filters > summary {
+        cursor: pointer;
+        font-weight: 600;
+        margin-bottom: .8rem;
+    }
+    .more-filters-count {
+        background: var(--brand-primary-soft, #e6edf5);
+        border: 1px solid var(--brand-primary-border, #99a7ba);
+        border-radius: 999px;
+        color: var(--brand-primary, #002352);
+        display: inline-block;
+        font-size: .75rem;
+        font-weight: 500;
+        margin-left: .4rem;
+        padding: .05rem .5rem;
+        vertical-align: middle;
+    }
+    .filter-subgroup + .filter-subgroup {
+        border-top: 1px solid var(--bs-border-color, #dee2e6);
+        margin-top: 1rem;
+        padding-top: .9rem;
+    }
+    .filter-subgroup-title {
+        color: var(--bs-secondary-color, #6c757d);
+        font-size: .9rem;
+        font-weight: 600;
+        margin-bottom: .6rem;
+    }
+    body.dark-mode .multi-select-mode-button[aria-pressed="true"],
+    body.dark-mode .more-filters-count {
+        background: #26374c;
+        border-color: #52657d;
+        color: #e6edf5;
     }
     .stage-row {
         background: #f8f9fa;
@@ -141,6 +481,7 @@
         transition: opacity .12s ease-in-out;
     }
     .pcs-itt-toggle[aria-pressed="true"] img { opacity: 1; }
+    .pcs-ttt-indicator { display: inline-block; min-width: 16px; font-weight: 700; color: #17345d; }
     .pcs-itt-toggle:disabled { cursor: default; }
     .pcs-itt-toggle:focus-visible { outline: 2px solid #0d6efd; outline-offset: 2px; }
     .race-results-table tbody td:nth-child(5) { text-align: center; }
@@ -228,99 +569,171 @@
             <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
             <input type="hidden" name="action" value="apply_filters">
             <h5 class="section-title">Search Races</h5>
+            <p class="filter-help">Search and select values. Choose Include or Exclude inside a list; filters work together to narrow the race list.</p>
             <div class="filters-grid">
-                <div class="filter-item filter-item-compact">
-                    <label class="form-label" for="race_year">Race year</label>
-                    <select id="race_year" name="race_year" class="form-select">
-                        <option value="all" {% if not selected_race_year %}selected{% endif %}>All</option>
-                        {% for year in available_race_years %}
-                        <option value="{{ year }}" {% if selected_race_year == year %}selected{% endif %}>{{ year }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
                 <div class="filter-item filter-item-name">
                     <label class="form-label" for="race_name">Race Name</label>
-                    <input id="race_name" name="race_name" type="text" class="form-control" placeholder="Search race name" value="{{ selected_filters.race_name }}">
+                    <div class="filter-search-control">
+                        {{ filter_icon('search') }}
+                        <input id="race_name" name="race_name" type="text" class="form-control" placeholder="Search race name" value="{{ selected_filters.race_name }}">
+                    </div>
                 </div>
-                <div class="filter-item filter-item-classification">
-                    <label class="form-label" for="classification">Category</label>
-                    <select id="classification" name="classification" class="form-select">
-                        <option value="">All</option>
-                        {% for value in filter_choices.categories %}
-                        <option value="{{ value }}" {% if selected_filters.classification == value %}selected{% endif %}>{{ value }}</option>
+                <div class="filter-item">
+                    <label class="form-label" for="race_year_values">Year</label>
+                    <select id="race_year_values" name="race_year_values" class="form-select" multiple size="3">
+                        {% for year in available_race_years %}
+                        <option value="{{ year }}" {% if year|string in selected_filters.race_year_values %}selected{% endif %}>{{ year }}</option>
                         {% endfor %}
                     </select>
-                </div>
-                <div class="filter-item filter-item-compact">
-                    <label class="form-label" for="profile">Route Profile</label>
-                    <select id="profile" name="profile" class="form-select" data-options-url="{{ url_for('web.stats_editor_profile_options') }}" data-options-loaded="{{ 'false' if server_paginated_races else 'true' }}">
-                        <option value="">All</option>
-                        {% for value in filter_choices.profiles %}
-                        <option value="{{ value }}" {% if selected_filters.profile == value %}selected{% endif %}>{{ value }}</option>
-                        {% endfor %}
-                    </select>
-                    {% if server_paginated_races %}<span class="visually-hidden" id="profile-options-status" aria-live="polite"></span>{% endif %}
-                </div>
-                <div class="filter-item filter-item-name">
-                    <label class="form-label" for="nation">Nation</label>
-                    <select id="nation" name="nation" class="form-select">
-                        <option value="">All</option>
-                        {% for value in filter_choices.nations %}
-                        <option value="{{ value }}" {% if selected_filters.nation == value %}selected{% endif %}>{{ value }}</option>
-                        {% endfor %}
-                    </select>
-                </div>
-                <div class="filter-item filter-item-checkbox">
-                    <label class="form-label" for="is_stage_race">Race Type</label>
-                    <select id="is_stage_race" name="is_stage_race" class="form-select">
-                        <option value="" {% if not selected_filters.is_stage_race %}selected{% endif %}>All</option>
-                        <option value="false" {% if selected_filters.is_stage_race == 'false' %}selected{% endif %}>One Day</option>
-                        <option value="true" {% if selected_filters.is_stage_race == 'true' %}selected{% endif %}>Multi-Day</option>
-                    </select>
-                </div>
-                <div class="filter-item filter-item-compact">
-                    <label class="form-label" for="junior_race">Junior</label>
-                    <select id="junior_race" name="junior_race" class="form-select">
-                        <option value="" {% if not selected_filters.junior_race %}selected{% endif %}>All</option>
-                        <option value="true" {% if selected_filters.junior_race == 'true' %}selected{% endif %}>Yes</option>
-                        <option value="false" {% if selected_filters.junior_race == 'false' %}selected{% endif %}>No</option>
-                    </select>
-                </div>
-                <div class="filter-item filter-item-compact">
-                    <label class="form-label" for="has_time_trial">Time Trials</label>
-                    <select id="has_time_trial" name="has_time_trial" class="form-select">
-                        <option value="" {% if not selected_filters.has_time_trial %}selected{% endif %}>All</option>
-                        <option value="true" {% if selected_filters.has_time_trial == 'true' %}selected{% endif %}>Includes time trial</option>
+                    <select name="race_year_mode" class="form-select form-select-sm filter-mode" aria-label="Include or exclude selected years">
+                        <option value="include" {% if selected_filters.race_year_mode == 'include' %}selected{% endif %}>Include selected</option>
+                        <option value="exclude" {% if selected_filters.race_year_mode == 'exclude' %}selected{% endif %}>Exclude selected</option>
                     </select>
                 </div>
                 <div class="filter-item">
-                    <button class="btn btn-outline-secondary" type="button" id="reset-race-filters" data-year="{{ selected_race_year or selected_year }}">Reset</button>
+                    <label class="form-label" for="nation_values">Country</label>
+                    <select id="nation_values" name="nation_values" class="form-select" multiple size="3">
+                        {% for value in filter_choices.nations %}
+                        <option value="{{ value }}" {% if value in selected_filters.nation_values %}selected{% endif %}>{{ value }}</option>
+                        {% endfor %}
+                    </select>
+                    <select name="nation_mode" class="form-select form-select-sm filter-mode" aria-label="Include or exclude selected countries">
+                        <option value="include" {% if selected_filters.nation_mode == 'include' %}selected{% endif %}>Include selected</option>
+                        <option value="exclude" {% if selected_filters.nation_mode == 'exclude' %}selected{% endif %}>Exclude selected</option>
+                    </select>
+                </div>
+                <div class="filter-item">
+                    <label class="form-label" for="classification_values">Category</label>
+                    <select id="classification_values" name="classification_values" class="form-select" multiple size="3">
+                        {% for value in filter_choices.categories %}
+                        <option value="{{ value }}" {% if value in selected_filters.classification_values %}selected{% endif %}>{{ value }}</option>
+                        {% endfor %}
+                    </select>
+                    <select name="classification_mode" class="form-select form-select-sm filter-mode" aria-label="Include or exclude selected categories">
+                        <option value="include" {% if selected_filters.classification_mode == 'include' %}selected{% endif %}>Include selected</option>
+                        <option value="exclude" {% if selected_filters.classification_mode == 'exclude' %}selected{% endif %}>Exclude selected</option>
+                    </select>
                 </div>
             </div>
-            <div class="filters-grid mt-2">
-                <div class="filter-item filter-item-date">
-                    <label class="form-label" for="start_date_from">From</label>
-                    <input id="start_date_from" name="start_date_from" type="date" class="form-control" value="{{ selected_filters.start_date_from }}">
+            <fieldset class="filter-statuses">
+                <legend class="form-label">Workflow status</legend>
+                <div class="filter-status-options">
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="edit_status_waiting_edits" name="edit_status" value="waiting_edits" {% if 'waiting_edits' in selected_filters.edit_statuses %}checked{% endif %}>
+                        <label class="form-check-label" for="edit_status_waiting_edits"><span class="filter-status-icon">{{ filter_icon('edit') }}</span> Waiting Edits</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="edit_status_pending_approval" name="edit_status" value="pending_approval" {% if 'pending_approval' in selected_filters.edit_statuses %}checked{% endif %}>
+                        <label class="form-check-label" for="edit_status_pending_approval"><span class="filter-status-icon">{{ filter_icon('clock') }}</span> Waiting Approval</label>
+                    </div>
+                    <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="edit_status_approved" name="edit_status" value="approved" {% if 'approved' in selected_filters.edit_statuses %}checked{% endif %}>
+                        <label class="form-check-label" for="edit_status_approved"><span class="filter-status-icon">{{ filter_icon('check') }}</span> Approved</label>
+                    </div>
                 </div>
-                <div class="filter-item filter-item-date">
-                    <label class="form-label" for="start_date_to">To</label>
-                    <input id="start_date_to" name="start_date_to" type="date" class="form-control" value="{{ selected_filters.start_date_to }}" title="Races ending before this date">
-                </div>
+            </fieldset>
+            <div class="selected-filter-summary" id="selected-filter-summary" hidden>
+                <div class="selected-filter-heading">Selected filters</div>
+                <div class="filter-help">Results update when you apply the filters.</div>
+                <div class="selected-filter-chips" id="selected-filter-chips"></div>
             </div>
-            <div class="d-flex gap-4 mt-3">
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="edit_status_waiting_edits" name="edit_status" value="waiting_edits" {% if 'waiting_edits' in selected_filters.edit_statuses %}checked{% endif %}>
-                    <label class="form-check-label" for="edit_status_waiting_edits">Waiting Edits</label>
-                </div>
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="edit_status_pending_approval" name="edit_status" value="pending_approval" {% if 'pending_approval' in selected_filters.edit_statuses %}checked{% endif %}>
-                    <label class="form-check-label" for="edit_status_pending_approval">Waiting Approval</label>
-                </div>
-                <div class="form-check">
-                    <input class="form-check-input" type="checkbox" id="edit_status_approved" name="edit_status" value="approved" {% if 'approved' in selected_filters.edit_statuses %}checked{% endif %}>
-                    <label class="form-check-label" for="edit_status_approved">Approved</label>
-                </div>
+            <div class="filter-actions mt-3">
+                <button class="btn btn-primary" type="submit">Apply filters</button>
+                <a class="btn btn-outline-secondary" id="reset-race-filters" href="{{ url_for('web.stats_editor', reset_filters=1) }}">{{ filter_icon('reset') }} Reset filters</a>
             </div>
+            <details class="additional-race-filters" id="more-race-filters">
+                <summary>More filters <span class="more-filters-count" id="more-filters-count" hidden></span></summary>
+                <div class="filter-subgroup">
+                    <h6 class="filter-subgroup-title">Race characteristics</h6>
+                    <div class="filters-grid">
+                    <div class="filter-item">
+                        <label class="form-label" for="month_values">Month</label>
+                        <select id="month_values" name="month_values" class="form-select" multiple size="4">
+                            {% for month_number, month_name in [(1,'January'),(2,'February'),(3,'March'),(4,'April'),(5,'May'),(6,'June'),(7,'July'),(8,'August'),(9,'September'),(10,'October'),(11,'November'),(12,'December')] %}
+                            <option value="{{ month_number }}" {% if month_number|string in selected_filters.month_values %}selected{% endif %}>{{ month_name }}</option>
+                            {% endfor %}
+                        </select>
+                        <select name="month_mode" class="form-select form-select-sm filter-mode" aria-label="Include or exclude selected months">
+                            <option value="include" {% if selected_filters.month_mode == 'include' %}selected{% endif %}>Include selected</option>
+                            <option value="exclude" {% if selected_filters.month_mode == 'exclude' %}selected{% endif %}>Exclude selected</option>
+                        </select>
+                    </div>
+                    <div class="filter-item">
+                        <label class="form-label" for="profile_values">Route Profile</label>
+                        <select id="profile_values" name="profile_values" class="form-select" multiple size="4" data-options-url="{{ url_for('web.stats_editor_profile_options') }}" data-options-loaded="{{ 'false' if server_paginated_races else 'true' }}" data-icon-flat="{{ url_for('static', filename='images/race-profiles/Icon_FLA.webp') }}" data-icon-cobbles="{{ url_for('static', filename='images/race-profiles/Icon_COB.webp') }}" data-icon-hills="{{ url_for('static', filename='images/race-profiles/Icon_HIL.webp') }}" data-icon-hills-uphill="{{ url_for('static', filename='images/race-profiles/Icon_HILa.webp') }}" data-icon-mountains="{{ url_for('static', filename='images/race-profiles/Icon_MTN.webp') }}" data-icon-mountains-uphill="{{ url_for('static', filename='images/race-profiles/Icon_MTNa.webp') }}">
+                            {% for value in filter_choices.profiles %}
+                            <option value="{{ value }}" {% if value in selected_filters.profile_values %}selected{% endif %}>{{ value }}</option>
+                            {% endfor %}
+                        </select>
+                        <select name="profile_mode" class="form-select form-select-sm filter-mode" aria-label="Include or exclude selected profiles">
+                            <option value="include" {% if selected_filters.profile_mode == 'include' %}selected{% endif %}>Include selected</option>
+                            <option value="exclude" {% if selected_filters.profile_mode == 'exclude' %}selected{% endif %}>Exclude selected</option>
+                        </select>
+                        {% if server_paginated_races %}<span class="visually-hidden" id="profile-options-status" aria-live="polite"></span>{% endif %}
+                    </div>
+                    <div class="filter-item">
+                        <label class="form-label" for="source_values">Amateur / UCI</label>
+                        <select id="source_values" name="source_values" class="form-select" multiple size="2">
+                            {% for value in filter_choices.sources %}
+                            <option value="{{ value }}" {% if value in selected_filters.source_values %}selected{% endif %}>{{ value }}</option>
+                            {% endfor %}
+                        </select>
+                        <select name="source_mode" class="form-select form-select-sm filter-mode" aria-label="Include or exclude selected race sources">
+                            <option value="include" {% if selected_filters.source_mode == 'include' %}selected{% endif %}>Include selected</option>
+                            <option value="exclude" {% if selected_filters.source_mode == 'exclude' %}selected{% endif %}>Exclude selected</option>
+                        </select>
+                    </div>
+                    <div class="filter-item">
+                        <label class="form-label" for="race_type_values">One Day / Multiday</label>
+                        <select id="race_type_values" name="race_type_values" class="form-select" multiple size="2">
+                            <option value="one_day" {% if 'one_day' in selected_filters.race_type_values %}selected{% endif %}>One Day</option>
+                            <option value="multiday" {% if 'multiday' in selected_filters.race_type_values %}selected{% endif %}>Multiday</option>
+                        </select>
+                        <select name="race_type_mode" class="form-select form-select-sm filter-mode" aria-label="Include or exclude selected race types">
+                            <option value="include" {% if selected_filters.race_type_mode == 'include' %}selected{% endif %}>Include selected</option>
+                            <option value="exclude" {% if selected_filters.race_type_mode == 'exclude' %}selected{% endif %}>Exclude selected</option>
+                        </select>
+                    </div>
+                    <div class="filter-item">
+                        <label class="form-label" for="junior_race">Junior</label>
+                        <select id="junior_race" name="junior_race" class="form-select">
+                            <option value="">Any</option>
+                            <option value="true" {% if selected_filters.junior_race == 'true' %}selected{% endif %}>Yes</option>
+                            <option value="false" {% if selected_filters.junior_race == 'false' %}selected{% endif %}>No</option>
+                        </select>
+                    </div>
+                    <div class="filter-item">
+                        <label class="form-label" for="has_time_trial">Contains TT</label>
+                        <select id="has_time_trial" name="has_time_trial" class="form-select">
+                            <option value="">Any</option>
+                            <option value="true" {% if selected_filters.has_time_trial == 'true' %}selected{% endif %}>Yes</option>
+                            <option value="false" {% if selected_filters.has_time_trial == 'false' %}selected{% endif %}>No</option>
+                        </select>
+                    </div>
+                    </div>
+                </div>
+                <div class="filter-subgroup">
+                    <h6 class="filter-subgroup-title">Dates and distance</h6>
+                    <div class="filters-grid">
+                    <div class="filter-item">
+                        <label class="form-label" for="distance_min">Distance per stage (km)</label>
+                        <div class="d-flex gap-2">
+                            <input id="distance_min" name="distance_min" type="number" min="0" max="10000" step="0.1" class="form-control" placeholder="Min" value="{{ selected_filters.distance_min }}" aria-label="Minimum stage distance in kilometres">
+                            <input id="distance_max" name="distance_max" type="number" min="{{ selected_filters.distance_min or 0 }}" max="10000" step="0.1" class="form-control" placeholder="Max" value="{{ selected_filters.distance_max }}" aria-label="Maximum stage distance in kilometres">
+                        </div>
+                        <div class="filter-help">For multiday races, matching stages only. Unknown distances do not match.</div>
+                    </div>
+                    <div class="filter-item">
+                        <label class="form-label" for="start_date_from">Start date from</label>
+                        <input id="start_date_from" name="start_date_from" type="date" class="form-control" value="{{ selected_filters.start_date_from }}">
+                    </div>
+                    <div class="filter-item">
+                        <label class="form-label" for="start_date_to">Start date to</label>
+                        <input id="start_date_to" name="start_date_to" type="date" class="form-control" value="{{ selected_filters.start_date_to }}">
+                    </div>
+                    </div>
+                </div>
+            </details>
         </form>
     </div>
 </div>
@@ -354,7 +767,7 @@
                         <th class="sortable-col" data-sort-type="text" style="width: 68px;">Cat.</th>
                         <th class="sortable-col" data-sort-type="text" style="width: 58px;">Jr.</th>
                         <th class="sortable-col" data-sort-type="number" style="width: 58px;">KM</th>
-                        <th class="sortable-col" data-sort-type="text" style="width: 120px;">Nation</th>
+                        <th class="sortable-col" data-sort-type="text" style="width: 120px;">Country</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -375,13 +788,13 @@
                             <span class="ms-1" title="Approval pending">⏳</span>
                             {% endif %}
                         </td>
-                        <td data-sort-value="{{ stage_rows|length if has_stages else (pcs_stage_count if race.is_pcs|default(false) else 0) }}">
+                        <td data-sort-value="{{ stage_rows|length if has_stages else (race.distance_matching_stage_ids|length if race.is_pcs|default(false) and (selected_filters.profile_values or selected_filters.distance_min or selected_filters.distance_max) else (pcs_stage_count if race.is_pcs|default(false) else 0)) }}">
                             {% if has_stages %}
                             <button type="button" class="btn btn-sm btn-outline-secondary toggle-btn" data-race-id="{{ race.id }}" data-stage-count="{{ stage_rows|length }}">
                                 ({{ stage_rows|length }})
                             </button>
                             {% elif race.is_pcs|default(false) and race.is_multi_day|default(false) %}
-                            <button type="button" class="btn btn-sm btn-outline-secondary toggle-btn" data-race-id="{{ race.id }}" data-stage-count="{{ pcs_stage_count }}" data-stage-load-url="{{ url_for('web.stats_editor_pcs_race_stages', pcs_race_id=race.pcs_race_id) }}" data-stage-detail-url="{{ url_for('web.stats_editor_race_detail_by_source', source='pcs', race_id=race.pcs_race_id) }}" data-itt-toggle-url="{{ url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=race.pcs_race_id) }}" data-profile-toggle-url="{{ url_for('web.stats_editor_cycle_pcs_profile', pcs_race_id=race.pcs_race_id) }}" title="Expand race stages">{{ '(' ~ pcs_stage_count ~ ')' if pcs_stage_count else '…' }}</button>
+                            <button type="button" class="btn btn-sm btn-outline-secondary toggle-btn" data-race-id="{{ race.id }}" data-pcs-race-id="{{ race.pcs_race_id }}" data-distance-url="{{ url_for('web.stats_editor_save_pcs_distance', pcs_race_id=race.pcs_race_id) }}" data-stage-count="{% if selected_filters.profile_values or selected_filters.distance_min or selected_filters.distance_max %}{{ race.distance_matching_stage_ids|length }}{% else %}{{ pcs_stage_count }}{% endif %}" data-distance-min="{{ selected_filters.distance_min }}" data-distance-max="{{ selected_filters.distance_max }}" data-stage-load-url="{{ url_for('web.stats_editor_pcs_race_stages', pcs_race_id=race.pcs_race_id) }}" data-stage-detail-url="{{ url_for('web.stats_editor_race_detail_by_source', source='pcs', race_id=race.pcs_race_id) }}" data-itt-toggle-url="{{ url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=race.pcs_race_id) }}" data-profile-toggle-url="{{ url_for('web.stats_editor_cycle_pcs_profile', pcs_race_id=race.pcs_race_id) }}" title="Expand race stages">{{ '(' ~ (race.distance_matching_stage_ids|length if (selected_filters.profile_values or selected_filters.distance_min or selected_filters.distance_max) else pcs_stage_count) ~ ')' if pcs_stage_count else '…' }}</button>
                             {% else %}
                             -
                             {% endif %}
@@ -395,7 +808,7 @@
                         </td>
                         <td class="text-center" data-sort-value="{% if race.time_trial_type == 'ITT' %}2{% elif race.time_trial_type == 'TTT' %}1{% elif race.pcs_overall_cached|default(false) %}0{% endif %}">
                             {% if race.is_multi_day|default(false) %}
-                            {% elif pcs_tt_column_available and race.pcs_overall_cached|default(false) %}<button type="button" class="pcs-itt-toggle" aria-pressed="{{ 'true' if race.time_trial_type == 'ITT' else 'false' }}" data-is-itt="{{ 'true' if race.time_trial_type == 'ITT' else 'false' }}" data-url="{{ url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=race.pcs_race_id) }}" data-stage-key="overall" data-csrf-token="{{ csrf_token() }}" aria-label="Toggle individual time trial for {{ race.name }}" title="{{ 'Individual time trial' if race.time_trial_type == 'ITT' else 'Not a time trial' }}"><img src="{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}" alt=""></button>
+                            {% elif pcs_tt_column_available and race.pcs_overall_cached|default(false) %}<button type="button" class="pcs-itt-toggle" aria-pressed="{{ 'true' if race.time_trial_type == 'ITT' else 'false' }}" data-is-itt="{{ 'true' if race.time_trial_type == 'ITT' else 'false' }}" data-time-trial-type="{{ race.time_trial_type or '' }}" data-manual-override="{{ race.manual_tt_override or 'AUTO' }}" data-url="{{ url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=race.pcs_race_id) }}" data-stage-key="overall" data-csrf-token="{{ csrf_token() }}" aria-label="{{ 'Team time trial' if race.time_trial_type == 'TTT' else 'Individual time trial' if race.time_trial_type == 'ITT' else 'Not a time trial' }}" title="{{ 'Team time trial' if race.time_trial_type == 'TTT' else 'Individual time trial' if race.time_trial_type == 'ITT' else 'Not a time trial' }}"><img src="{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}" alt=""></button>
                             {% else %}-{% endif %}
                         </td>
                         <td class="race-name-cell" data-sort-value="{{ (race.name or '')|lower }}">
@@ -405,9 +818,9 @@
                         <td class="winner-cell" title="{{ race.winner_name or '-' }}">
                             {% if race.winner_url %}<a href="{{ race.winner_url }}" class="winner-link {{ 'winner-link-known' if race.winner_in_cdb else 'winner-link-external' }}">{{ race.winner_name or '-' }}</a>{% else %}{{ race.winner_name or '-' }}{% endif %}
                         </td>
-                        <td data-sort-value="{{ (race.classification or '-')|lower }}">{{ race.classification or '-' }}</td>
+                        <td data-sort-value="{{ (race.stats_editor_category or '-')|lower }}">{{ race.stats_editor_category or '-' }}</td>
                         <td data-sort-value="{{ 'JR' if race.is_junior_race|default(false) else 'MU/ME' }}">{{ 'JR' if race.is_junior_race|default(false) else 'MU/ME' }}</td>
-                        <td data-sort-value="{{ race.table_distance if race.table_distance is not none else '' }}">{{ '%.1f'|format(race.table_distance|float) if race.table_distance is not none else '-' }}</td>
+                        <td data-sort-value="{{ race.table_distance if race.table_distance is not none else '' }}">{% if race.is_pcs|default(false) and can_update_distance %}<span class="pcs-distance-value" role="button" tabindex="0" data-distance-value="{{ '%.1f'|format(race.table_distance|float) if race.table_distance is not none else '' }}" data-race-id="{{ race.pcs_race_id }}" data-stage-key="overall" data-url="{{ url_for('web.stats_editor_save_pcs_distance', pcs_race_id=race.pcs_race_id) }}" data-csrf-token="{{ csrf_token() }}">{{ '%.1f'|format(race.table_distance|float) if race.table_distance is not none else '-' }}</span>{% else %}{{ '%.1f'|format(race.table_distance|float) if race.table_distance is not none else '-' }}{% endif %}</td>
                         <td data-sort-value="{{ (race.nation_name or '')|lower }}">{{ race.nation_name or '-' }}</td>
                     </tr>
 
@@ -433,14 +846,14 @@
                             {% else %}{{ profile_icon(stage.parcours_type) }}{% endif %}
                         </td>
                         <td class="text-center">
-                            {% if pcs_tt_column_available and race.is_pcs|default(false) and stage.is_cached %}<button type="button" class="pcs-itt-toggle" aria-pressed="{{ 'true' if stage.time_trial_type == 'ITT' else 'false' }}" data-is-itt="{{ 'true' if stage.time_trial_type == 'ITT' else 'false' }}" data-url="{{ url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=race.pcs_race_id) }}" data-stage-key="stage:{{ stage.stage_number }}" data-csrf-token="{{ csrf_token() }}" aria-label="Toggle time trial for stage {{ stage.stage_number }}" title="{{ 'Individual time trial' if stage.time_trial_type == 'ITT' else 'Not a time trial' }}"><img src="{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}" alt=""></button>
+                            {% if pcs_tt_column_available and race.is_pcs|default(false) and stage.is_cached %}<button type="button" class="pcs-itt-toggle" aria-pressed="{{ 'true' if stage.time_trial_type == 'ITT' else 'false' }}" data-is-itt="{{ 'true' if stage.time_trial_type == 'ITT' else 'false' }}" data-time-trial-type="{{ stage.time_trial_type or '' }}" data-manual-override="{{ stage.manual_time_trial_type_override or 'AUTO' }}" data-url="{{ url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=race.pcs_race_id) }}" data-stage-key="stage:{{ stage.stage_number }}" data-csrf-token="{{ csrf_token() }}" aria-label="{{ 'Team time trial' if stage.time_trial_type == 'TTT' else 'Individual time trial' if stage.time_trial_type == 'ITT' else 'Not a time trial' }}" title="{{ 'Team time trial' if stage.time_trial_type == 'TTT' else 'Individual time trial' if stage.time_trial_type == 'ITT' else 'Not a time trial' }}"><img src="{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}" alt=""></button>
                             {% else %}-{% endif %}
                         </td>
                         <td class="race-name-cell">Stage {{ stage.stage_number or '?' }} - {{ stage.stage_start_location or '-' }} to {{ stage.stage_end_location or '-' }}</td>
                         <td class="winner-cell" title="{{ stage_winner or '-' }}">{{ stage_winner or '-' }}</td>
                         <td>-</td>
                         <td>-</td>
-                        <td>{{ '%.1f'|format(stage.stage_distance_km|float) if stage.stage_distance_km is not none else '-' }}</td>
+                        <td>{% if race.is_pcs|default(false) and can_update_distance and stage.is_cached %}<span class="pcs-distance-value" role="button" tabindex="0" data-distance-value="{{ '%.1f'|format(stage.stage_distance_km|float) if stage.stage_distance_km is not none else '' }}" data-race-id="{{ race.pcs_race_id }}" data-stage-key="stage:{{ stage.stage_number }}" data-url="{{ url_for('web.stats_editor_save_pcs_distance', pcs_race_id=race.pcs_race_id) }}" data-csrf-token="{{ csrf_token() }}">{{ '%.1f'|format(stage.stage_distance_km|float) if stage.stage_distance_km is not none else '-' }}</span>{% else %}{{ '%.1f'|format(stage.stage_distance_km|float) if stage.stage_distance_km is not none else '-' }}{% endif %}</td>
                         <td>-</td>
                     </tr>
                     {% endfor %}
@@ -544,31 +957,57 @@
 
 {% block scripts %}
 <script>
+const PCS_TT_ICON_URL = "{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}";
+
+function updateTimeTrialToggle(toggle, timeTrialType) {
+    const value = timeTrialType || '';
+    toggle.dataset.timeTrialType = value;
+    toggle.replaceChildren();
+    if (value === 'TTT') {
+        const dash = document.createElement('span');
+        dash.className = 'pcs-ttt-indicator';
+        dash.textContent = '-';
+        toggle.appendChild(dash);
+    } else {
+        const icon = document.createElement('img');
+        icon.src = PCS_TT_ICON_URL;
+        icon.alt = '';
+        icon.classList.toggle('is-unknown', value !== 'ITT');
+        toggle.appendChild(icon);
+    }
+    const label = value === 'ITT' ? 'Individual time trial'
+        : value === 'TTT' ? 'Team time trial' : 'Not a time trial';
+    toggle.title = label;
+    toggle.setAttribute('aria-label', label);
+    toggle.setAttribute('aria-pressed', String(value === 'ITT'));
+}
+
 async function saveIttToggle() {
     const toggle = this;
-    const previousValue = toggle.dataset.isItt === 'true';
-    const nextValue = !previousValue;
-    toggle.dataset.isItt = String(nextValue);
-    toggle.setAttribute('aria-pressed', String(nextValue));
+    const states = ['AUTO', 'ITT', 'TTT', 'NONE'];
+    const previousOverride = toggle.dataset.manualOverride || 'AUTO';
+    const nextOverride = states[(states.indexOf(previousOverride) + 1) % states.length];
     toggle.disabled = true;
     try {
         const body = new URLSearchParams({
             csrf_token: toggle.dataset.csrfToken,
             stage_key: toggle.dataset.stageKey,
-            is_itt: nextValue ? 'true' : 'false',
+            override: nextOverride,
+            is_itt: nextOverride === 'ITT' ? 'true' : 'false',
         });
         const response = await fetch(toggle.dataset.url, {
             method: 'POST', credentials: 'same-origin',
             headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
             body: body.toString(),
         });
-        if (!response.ok) throw new Error('Could not save ITT flag');
+        if (!response.ok) throw new Error('Could not save TT override');
+        const result = await response.json();
+        toggle.dataset.manualOverride = result.manual_override || 'AUTO';
+        updateTimeTrialToggle(toggle, result.time_trial_type || '');
         const cell = toggle.closest('td');
-        if (cell) cell.dataset.sortValue = nextValue ? '2' : '0';
-        toggle.title = nextValue ? 'Individual time trial' : 'Not a time trial';
+        if (cell) cell.dataset.sortValue = result.time_trial_type === 'ITT' ? '2' : (result.time_trial_type === 'TTT' ? '1' : '0');
     } catch (error) {
-        toggle.dataset.isItt = String(previousValue);
-        toggle.setAttribute('aria-pressed', String(previousValue));
+        toggle.dataset.manualOverride = previousOverride;
         toggle.title = 'Could not save. Please try again.';
     } finally {
         toggle.disabled = false;
@@ -577,6 +1016,7 @@ async function saveIttToggle() {
 
 const PCS_RACE_PROFILES = [
     { value: 'Flat', icon: 'Icon_FLA.webp' },
+    { value: 'Cobbles', icon: 'Icon_COB.webp' },
     { value: 'Hills, flat finish', icon: 'Icon_HIL.webp' },
     { value: 'Hills, uphill finish', icon: 'Icon_HILa.webp' },
     { value: 'Mountains, flat finish', icon: 'Icon_MTN.webp' },
@@ -584,6 +1024,7 @@ const PCS_RACE_PROFILES = [
 ];
 const PCS_PROFILE_ICONS = {
     'flat': "{{ url_for('static', filename='images/race-profiles/Icon_FLA.webp') }}",
+    'cobbles': "{{ url_for('static', filename='images/race-profiles/Icon_COB.webp') }}",
     'hills, flat finish': "{{ url_for('static', filename='images/race-profiles/Icon_HIL.webp') }}",
     'hills, uphill finish': "{{ url_for('static', filename='images/race-profiles/Icon_HILa.webp') }}",
     'mountains, flat finish': "{{ url_for('static', filename='images/race-profiles/Icon_MTN.webp') }}",
@@ -621,7 +1062,10 @@ function updateProfileToggle(toggle, profile) {
 
 async function cycleRaceProfile() {
     const toggle = this;
-    const current = (toggle.dataset.profile || '').trim().toLocaleLowerCase();
+    const cycleProfile = toggle.dataset.profileCycle !== undefined
+        ? toggle.dataset.profileCycle
+        : (toggle.dataset.profile || '');
+    const current = cycleProfile.trim().toLocaleLowerCase();
     const currentIndex = PCS_RACE_PROFILES.findIndex(
         profile => profile.value.toLocaleLowerCase() === current,
     );
@@ -631,6 +1075,7 @@ async function cycleRaceProfile() {
             ? ''
             : PCS_RACE_PROFILES[currentIndex + 1].value);
     const previousProfile = toggle.dataset.profile || '';
+    const previousCycleProfile = toggle.dataset.profileCycle;
     toggle.disabled = true;
     updateProfileToggle(toggle, nextProfile);
     try {
@@ -647,8 +1092,16 @@ async function cycleRaceProfile() {
         if (!response.ok) throw new Error('Could not save race profile');
         const result = await response.json();
         updateProfileToggle(toggle, result.parcours_type || '');
+        // Clearing the manual override can reveal the original PCS/FC profile.
+        // Keep the cycle cursor at the cleared state so the next click wraps to Flat.
+        toggle.dataset.profileCycle = nextProfile;
     } catch (error) {
         updateProfileToggle(toggle, previousProfile);
+        if (previousCycleProfile === undefined) {
+            delete toggle.dataset.profileCycle;
+        } else {
+            toggle.dataset.profileCycle = previousCycleProfile;
+        }
         toggle.title = 'Could not save. Please try again.';
     } finally {
         toggle.disabled = false;
@@ -666,7 +1119,18 @@ async function toggleStages(raceId, button) {
         button.disabled = true;
         button.textContent = '…';
         try {
-            const response = await fetch(loadUrl, { credentials: 'same-origin' });
+            const stageUrl = new URL(loadUrl, window.location.href);
+            if (button.dataset.distanceMin) stageUrl.searchParams.set('distance_min', button.dataset.distanceMin);
+            if (button.dataset.distanceMax) stageUrl.searchParams.set('distance_max', button.dataset.distanceMax);
+            const profileSelect = document.querySelector('#race-filters-form select[name="profile_values"]');
+            const profileMode = document.querySelector('#race-filters-form select[name="profile_mode"]');
+            if (profileSelect) {
+                Array.from(profileSelect.selectedOptions).forEach(option => {
+                    stageUrl.searchParams.append('profile_values', option.value);
+                });
+            }
+            if (profileMode) stageUrl.searchParams.set('profile_mode', profileMode.value);
+            const response = await fetch(stageUrl.toString(), { credentials: 'same-origin' });
             if (!response.ok) {
                 throw new Error('Could not load race stages');
             }
@@ -675,6 +1139,7 @@ async function toggleStages(raceId, button) {
             const raceRow = button.closest('tr');
             let insertionPoint = raceRow;
             stages.forEach(stage => {
+                const stageId = stage.stage_id || stage.stage_number;
                 const row = document.createElement('tr');
                 row.className = 'stage-row stage-row-' + raceId;
                 row.style.display = 'none';
@@ -729,10 +1194,10 @@ async function toggleStages(raceId, button) {
                     profileToggle.type = 'button';
                     profileToggle.className = 'race-profile-toggle';
                     profileToggle.dataset.profile = profileUnknown ? '' : profile;
-                    profileToggle.dataset.stageKey = `stage:${stage.stage_number}`;
+                    profileToggle.dataset.stageKey = `stage:${stageId}`;
                     profileToggle.dataset.url = button.dataset.profileToggleUrl;
                     profileToggle.dataset.csrfToken = document.querySelector('input[name="csrf_token"]')?.value || '';
-                    profileToggle.setAttribute('aria-label', `Change profile for stage ${stage.stage_number}`);
+                    profileToggle.setAttribute('aria-label', `Change profile for stage ${stageId}`);
                     profileToggle.title = profileUnknown ? 'Unknown profile' : profile;
                     profileToggle.appendChild(profileIcon);
                     profileToggle.addEventListener('click', cycleRaceProfile);
@@ -749,16 +1214,12 @@ async function toggleStages(raceId, button) {
                     toggle.type = 'button';
                     toggle.className = 'pcs-itt-toggle';
                     toggle.dataset.isItt = String(stage.time_trial_type === 'ITT');
-                    toggle.setAttribute('aria-pressed', String(stage.time_trial_type === 'ITT'));
+                    toggle.dataset.timeTrialType = stage.time_trial_type || '';
+                    toggle.dataset.manualOverride = stage.manual_time_trial_type_override || 'AUTO';
                     toggle.dataset.url = button.dataset.ittToggleUrl;
-                    toggle.dataset.stageKey = `stage:${stage.stage_number}`;
+                    toggle.dataset.stageKey = `stage:${stageId}`;
                     toggle.dataset.csrfToken = document.querySelector('input[name="csrf_token"]')?.value || '';
-                    toggle.setAttribute('aria-label', `Toggle time trial for stage ${stage.stage_number}`);
-                    toggle.title = stage.time_trial_type === 'ITT' ? 'Individual time trial' : 'Not a time trial';
-                    const icon = document.createElement('img');
-                    icon.src = "{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}";
-                    icon.alt = '';
-                    toggle.appendChild(icon);
+                    updateTimeTrialToggle(toggle, stage.time_trial_type || '');
                     toggle.addEventListener('click', saveIttToggle);
                     ttCell.appendChild(toggle);
                 }
@@ -767,7 +1228,7 @@ async function toggleStages(raceId, button) {
                 nameCell.className = 'race-name-cell';
                 const link = document.createElement('a');
                 const detailUrl = new URL(button.dataset.stageDetailUrl, window.location.href);
-                detailUrl.searchParams.set('pcs_stage', stage.stage_number);
+                detailUrl.searchParams.set('pcs_stage', stageId);
                 link.href = detailUrl.toString();
                 link.textContent = stage.name || `Stage ${stage.stage_number}`;
                 nameCell.appendChild(link);
@@ -793,7 +1254,21 @@ async function toggleStages(raceId, button) {
                     '-',
                 ].forEach((value, index) => {
                     const cell = document.createElement('td');
-                    cell.textContent = value;
+                    if (index === 0 && stage.is_cached && {{ can_update_distance|tojson }}) {
+                        const editor = document.createElement('span');
+                        editor.className = 'pcs-distance-value';
+                        editor.setAttribute('role', 'button');
+                        editor.tabIndex = 0;
+                        editor.dataset.distanceValue = stage.distance_km != null ? Number(stage.distance_km).toFixed(1) : '';
+                        editor.dataset.raceId = button.dataset.pcsRaceId;
+                        editor.dataset.stageKey = `stage:${stageId}`;
+                        editor.dataset.url = button.dataset.distanceUrl;
+                        editor.dataset.csrfToken = document.querySelector('input[name="csrf_token"]')?.value || '';
+                        editor.textContent = value;
+                        cell.appendChild(editor);
+                    } else {
+                        cell.textContent = value;
+                    }
                     row.appendChild(cell);
                 });
                 insertionPoint.after(row);
@@ -843,12 +1318,23 @@ document.addEventListener('DOMContentLoaded', function () {
         toggle.addEventListener('click', cycleRaceProfile);
     });
     document.querySelectorAll('.pcs-itt-toggle[data-url]').forEach(function (toggle) {
+        updateTimeTrialToggle(toggle, toggle.dataset.timeTrialType || '');
         toggle.addEventListener('click', saveIttToggle);
     });
     const filtersForm = document.getElementById('race-filters-form');
     if (filtersForm) {
         let filterTimer;
         let submitting = false;
+        const moreFilters = document.getElementById('more-race-filters');
+        const moreFiltersStateKey = `stats-editor-more-filters-open:${window.location.pathname}`;
+        if (moreFilters) {
+            const previousState = window.sessionStorage.getItem(moreFiltersStateKey);
+            window.sessionStorage.removeItem(moreFiltersStateKey);
+            moreFilters.open = previousState === 'open';
+            document.getElementById('reset-race-filters')?.addEventListener('click', function () {
+                window.sessionStorage.removeItem(moreFiltersStateKey);
+            });
+        }
         function applyFilters() {
             clearTimeout(filterTimer);
             if (!submitting && filtersForm.reportValidity()) {
@@ -858,15 +1344,18 @@ document.addEventListener('DOMContentLoaded', function () {
         filtersForm.addEventListener('submit', function () {
             clearTimeout(filterTimer);
             submitting = true;
+            if (moreFilters) {
+                window.sessionStorage.setItem(moreFiltersStateKey, moreFilters.open ? 'open' : 'closed');
+            }
         });
-        const raceYear = filtersForm.elements.namedItem('race_year');
-        const profileSelect = filtersForm.elements.namedItem('profile');
+        const profileSelect = filtersForm.elements.namedItem('profile_values');
         const profileOptionsStatus = document.getElementById('profile-options-status');
         let loadingProfileOptions = false;
-        profileSelect.addEventListener('focus', async function () {
+        const profileFocusTarget = filtersForm.querySelector(`[data-multi-select-for="${profileSelect.id}"]`) || profileSelect;
+        profileFocusTarget.addEventListener('focus', async function () {
             if (profileSelect.dataset.optionsLoaded === 'true' || loadingProfileOptions) return;
             loadingProfileOptions = true;
-            if (profileOptionsStatus) profileOptionsStatus.textContent = 'Loading profile choices…';
+            if (profileOptionsStatus) profileOptionsStatus.textContent = 'Loading profile choices.';
             try {
                 const query = new URLSearchParams(new FormData(filtersForm));
                 const response = await fetch(profileSelect.dataset.optionsUrl + '?' + query.toString(), {
@@ -874,14 +1363,16 @@ document.addEventListener('DOMContentLoaded', function () {
                 });
                 if (!response.ok) throw new Error('Profile choices could not be loaded');
                 const data = await response.json();
-                const selectedValue = profileSelect.value;
+                const selectedValues = new Set(Array.from(profileSelect.selectedOptions, option => option.value));
+                const existingValues = new Set(Array.from(profileSelect.options, option => option.value));
                 (data.profiles || []).forEach(function (value) {
+                    if (existingValues.has(value)) return;
                     const option = document.createElement('option');
                     option.value = value;
                     option.textContent = value;
+                    option.selected = selectedValues.has(value);
                     profileSelect.appendChild(option);
                 });
-                profileSelect.value = selectedValue;
                 profileSelect.dataset.optionsLoaded = 'true';
                 if (profileOptionsStatus) profileOptionsStatus.textContent = 'Profile choices loaded.';
             } catch (error) {
@@ -889,47 +1380,6 @@ document.addEventListener('DOMContentLoaded', function () {
             } finally {
                 loadingProfileOptions = false;
             }
-        });
-        raceYear.addEventListener('change', function () {
-            if (this.value === 'all') {
-                filtersForm.elements.namedItem('start_date_from').value = '';
-                filtersForm.elements.namedItem('start_date_to').value = '';
-                return;
-            }
-            const year = this.value.padStart(4, '0');
-            filtersForm.elements.namedItem('start_date_from').value = year + '-01-01';
-            filtersForm.elements.namedItem('start_date_to').value = year + '-12-31';
-        });
-        filtersForm.querySelectorAll('select, input[type="date"], input[type="checkbox"]').forEach(function (field) {
-            field.addEventListener('change', applyFilters);
-        });
-        const raceName = filtersForm.elements.namedItem('race_name');
-        raceName.addEventListener('input', function (event) {
-            clearTimeout(filterTimer);
-            if (!event.isComposing) {
-                filterTimer = setTimeout(applyFilters, 500);
-            }
-        });
-        raceName.addEventListener('compositionend', function () {
-            clearTimeout(filterTimer);
-            filterTimer = setTimeout(applyFilters, 500);
-        });
-        document.getElementById('reset-race-filters').addEventListener('click', function () {
-            ['race_name', 'classification', 'nation', 'is_stage_race', 'junior_race', 'has_time_trial'].forEach(function (name) {
-                filtersForm.elements.namedItem(name).value = '';
-            });
-            filtersForm.querySelectorAll('input[name="edit_status"]').forEach(function (field) {
-                field.checked = false;
-            });
-            if (raceYear.value === 'all') {
-                filtersForm.elements.namedItem('start_date_from').value = '';
-                filtersForm.elements.namedItem('start_date_to').value = '';
-            } else {
-                const year = raceYear.value.padStart(4, '0');
-                filtersForm.elements.namedItem('start_date_from').value = year + '-01-01';
-                filtersForm.elements.namedItem('start_date_to').value = year + '-12-31';
-            }
-            applyFilters();
         });
     }
 
@@ -1078,8 +1528,8 @@ document.addEventListener('DOMContentLoaded', function () {
         return Array.from(groupsByRaceId.values());
     }
 
-    function applyRaceLimit() {
-        const groups = collectRaceGroups();
+    function applyRaceLimit(groups) {
+        groups = groups || collectRaceGroups();
         const shownCount = Math.min(visibleRaceLimit, groups.length);
 
         groups.forEach(function (group, index) {
@@ -1146,10 +1596,16 @@ document.addEventListener('DOMContentLoaded', function () {
             sortState.columnIndex === columnIndex && sortState.direction === 'asc'
         ) ? 'desc' : 'asc');
 
-        const groups = collectRaceGroups();
+        const groups = collectRaceGroups().map(function (group) {
+            return {
+                primary: group.primary,
+                stages: group.stages,
+                sortValue: getSortValue(group.primary, columnIndex, sortType),
+            };
+        });
         groups.sort(function (groupA, groupB) {
-            const valueA = getSortValue(groupA.primary, columnIndex, sortType);
-            const valueB = getSortValue(groupB.primary, columnIndex, sortType);
+            const valueA = groupA.sortValue;
+            const valueB = groupB.sortValue;
 
             if (valueA.missing !== valueB.missing) {
                 return valueA.missing ? 1 : -1;
@@ -1166,13 +1622,15 @@ document.addEventListener('DOMContentLoaded', function () {
             return 0;
         });
 
+        const fragment = document.createDocumentFragment();
         groups.forEach(function (group) {
-            tableBody.appendChild(group.primary);
+            fragment.appendChild(group.primary);
             group.stages.forEach(function (stageRow) {
-                tableBody.appendChild(stageRow);
+                fragment.appendChild(stageRow);
             });
         });
-        applyRaceLimit();
+        tableBody.appendChild(fragment);
+        applyRaceLimit(groups);
 
         clearSortIndicators();
         header.classList.add(nextDirection === 'asc' ? 'sort-asc' : 'sort-desc');
@@ -1207,4 +1665,6 @@ document.addEventListener('DOMContentLoaded', function () {
     }
 });
 </script>
+<script src="{{ url_for('static', filename='js/stats_editor_multi_select.js', v=2) }}"></script>
+<script src="{{ url_for('static', filename='js/pcs_distance_editor.js', v=2) }}"></script>
 {% endblock %}

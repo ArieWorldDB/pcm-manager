@@ -4,21 +4,21 @@ from __future__ import annotations
 import hashlib
 import logging
 import re
-import time
 import unicodedata
 from datetime import datetime
-from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
-from urllib.request import HTTPRedirectHandler, Request, build_opener
+from urllib.error import URLError
+from urllib.parse import urljoin, urlsplit
+
+from curl_cffi import requests as curl_requests
 
 from sqlalchemy import create_engine, text
 
 from webapp.extensions import db
+from webapp.integrations.pcs import http as pcs_http
 from webapp.models.main.namespace import Namespace
 
 logger = logging.getLogger(__name__)
 DAILY_REQUEST_LIMIT = 100
-REQUEST_DELAY_SECONDS = 5
 PCS_ORIGIN = 'https://www.procyclingstats.com'
 
 
@@ -34,16 +34,6 @@ def assumed_pcs_slug(first_name, last_name):
         'ƒ': 'f', 'ĸ': 'k',
     }))
     return re.sub(r'-+', '-', re.sub(r'[^a-z0-9-]+', '-', value)).strip('-')
-
-
-class _PCSRedirects(HTTPRedirectHandler):
-    def redirect_request(self, req, fp, code, msg, headers, newurl):
-        parsed = urlsplit(newurl)
-        if parsed.scheme != 'https' or parsed.hostname not in {
-            'www.procyclingstats.com', 'procyclingstats.com',
-        }:
-            raise URLError('PCS redirected outside its approved HTTPS host.')
-        return super().redirect_request(req, fp, code, msg, headers, newurl)
 
 
 def _profile_facts(html):
@@ -102,15 +92,35 @@ def _needs_check(row):
 
 def _request_profile(slug):
     url = f'{PCS_ORIGIN}/rider/{slug}/road'
-    request = Request(url, headers={'User-Agent': 'WorldDB/1.0 (PCS profile identity check)', 'Accept': 'text/html'})
-    try:
-        with build_opener(_PCSRedirects()).open(request, timeout=25) as response:
-            final = urlsplit(response.geturl())
-            if final.scheme != 'https' or final.hostname not in {'www.procyclingstats.com', 'procyclingstats.com'}:
+    request_url = url
+    for _ in range(10):
+        parsed = urlsplit(request_url)
+        if parsed.scheme != 'https' or parsed.hostname not in {
+            'www.procyclingstats.com', 'procyclingstats.com',
+        }:
+            raise URLError('PCS redirected outside its approved HTTPS host.')
+        response = pcs_http.get(
+            request_url,
+            headers={'Accept': 'text/html'},
+            timeout=25,
+            impersonate='chrome',
+            allow_redirects=False,
+        )
+        if response.status_code in {301, 302, 303, 307, 308}:
+            location = response.headers.get('Location')
+            if location:
+                request_url = urljoin(request_url, location)
+                continue
+        if response.url:
+            final = urlsplit(response.url)
+            if final.scheme != 'https' or final.hostname not in {
+                'www.procyclingstats.com', 'procyclingstats.com',
+            }:
                 raise URLError('PCS response came from an unapproved host.')
-            return response.status, response.read(), url
-    except HTTPError as exc:
-        return exc.code, b'', url
+        if response.status_code >= 400:
+            return response.status_code, b'', url
+        return response.status_code, response.content, url
+    raise URLError('PCS exceeded the redirect limit.')
 
 
 def _namespace_candidates(namespace):
@@ -248,8 +258,12 @@ def _save_check(namespace, rider, slug, http_status, status, identity, message, 
         engine.dispose()
 
 
-def run_daily_unconfirmed_slug_checks(*, request_limit=DAILY_REQUEST_LIMIT, delay_seconds=REQUEST_DELAY_SECONDS, sleep=time.sleep):
-    """Check unresolved roster slugs sequentially across active namespaces."""
+def run_daily_unconfirmed_slug_checks(*, request_limit=DAILY_REQUEST_LIMIT, delay_seconds=None, sleep=None):
+    """Check unresolved slugs; the shared PCS client applies request spacing.
+
+    The legacy delay parameters remain accepted for compatibility with callers.
+    """
+    pcs_http.ensure_pcs_fetch_allowed()
     namespaces = Namespace.query.filter_by(status='active', is_template=False, is_deleted=False).order_by(Namespace.slug).all()
     candidates = []
     for namespace in namespaces:
@@ -258,13 +272,9 @@ def run_daily_unconfirmed_slug_checks(*, request_limit=DAILY_REQUEST_LIMIT, dela
         except Exception:
             logger.exception('Could not collect PCS slug checks for namespace %s', namespace.slug)
     checked = verified = failed = 0
-    previous = False
     for namespace, rider in candidates:
         if checked >= max(0, int(request_limit)):
             break
-        if previous:
-            sleep(max(0, float(delay_seconds)))
-        previous = True
         checked += 1
         slug = rider['slug']
         status = 'request_error'
@@ -305,4 +315,4 @@ def run_daily_unconfirmed_slug_checks(*, request_limit=DAILY_REQUEST_LIMIT, dela
             failed += 1
     return {'status': 'complete', 'checked': checked, 'verified': verified, 'failed': failed,
             'remaining': max(0, len(candidates) - checked), 'limit': request_limit,
-            'delay_seconds': delay_seconds}
+            'request_delay_range_seconds': [2, 5]}

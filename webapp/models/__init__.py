@@ -16,6 +16,7 @@ from webapp.models.main.discord_settings import DiscordSettings, DiscordWorkflow
 from webapp.models.main.firstcycling import FirstCyclingTeam, FirstCyclingRider
 from webapp.models.main.race_result_map import RaceResultMap
 from webapp.models.main.pcs import PcsRaceCalendar, PcsRaceResultPage
+from webapp.models.main.pcs_firstcycling_race_match import PcsFirstCyclingRaceMatch
 
 
 # Association tables and relationship configuration are handled in CLI after db.create_all()
@@ -45,4 +46,5 @@ __all__ = [
     'RaceResultMap',
     'PcsRaceCalendar',
     'PcsRaceResultPage',
+    'PcsFirstCyclingRaceMatch',
 ]

@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 from flask import render_template, redirect, url_for, flash, request, abort, current_app, session, make_response, send_file, g, jsonify
 from flask_login import login_user, logout_user, login_required, current_user
-from sqlalchemy import create_engine, text, Integer, func, or_, inspect as sqlalchemy_inspect
+from sqlalchemy import case, create_engine, text, Integer, func, or_, inspect as sqlalchemy_inspect
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm import selectinload, undefer
 from werkzeug.exceptions import HTTPException
@@ -66,6 +66,15 @@ from webapp.integrations.pcs import (
 from webapp.integrations.pcs.schema import (
     pcs_parcours_type_column_available,
     pcs_time_trial_type_column_available,
+    pcs_distance_override_column_available,
+    pcs_source_distance_column_available,
+    pcs_firstcycling_distance_column_available,
+    pcs_firstcycling_times_column_available,
+    pcs_profile_precedence_columns_available,
+)
+from webapp.integrations.pcs.profile_precedence import (
+    effective_profile as _effective_profile,
+    effective_time_trial_type as _effective_time_trial_type,
 )
 from webapp.integrations.pcs.result_pages import (
     _deserialize_pcs_result_page, _fetch_pcs_race_result,
@@ -1830,14 +1839,16 @@ def _race_result_source_info(mapped_result):
         return None
 
     race_id = _safe_int(mapped_result.external_race_id)
-    stage_id = _safe_int(mapped_result.external_stage_id)
+    stage_id = str(mapped_result.external_stage_id).strip().lower() if mapped_result.external_stage_id is not None else None
+    if stage_id is not None and not re.fullmatch(r'(?:0|[1-9]\d?)[a-z]?', stage_id):
+        stage_id = None
     if mapped_result.provider == 'pcs':
         pcs_race = PcsRaceCalendar.query.filter_by(id=race_id).first() if race_id is not None else None
         race_name = (
             pcs_race.name if pcs_race is not None and pcs_race.name
             else f'PCS Race #{race_id or mapped_result.race_result_id}'
         )
-        stage_label = f'Stage {stage_id}' if stage_id is not None else None
+        stage_label = ('Prologue' if stage_id == '0' else f'Stage {stage_id}') if stage_id is not None else None
         label = f'{race_name} - {stage_label}' if stage_label else race_name
         url = (
             url_for('web.stats_editor_race_detail_by_source', source='pcs', race_id=race_id, pcs_stage=stage_id)
@@ -2415,7 +2426,14 @@ def _load_namespace_approved_release_items(
     for row in rows:
         mapped_result = race_result_map.get(int(row.get('race_result_id') or 0))
         race_id = (_safe_int(mapped_result.external_race_id) if mapped_result is not None else 0) or 0
-        stage_id = (_safe_int(mapped_result.external_stage_id) if mapped_result is not None else 0) or 0
+        external_stage_id = (
+            str(mapped_result.external_stage_id).strip().lower()
+            if mapped_result is not None and mapped_result.external_stage_id is not None
+            else None
+        )
+        if external_stage_id is not None and not re.fullmatch(r'(?:0|[1-9]\d?)[a-z]?', external_stage_id):
+            external_stage_id = None
+        stage_id = external_stage_id or '0'
         list_id = int(row.get('stat_list_id') or 0)
 
         if list_id > 0:
@@ -2438,10 +2456,11 @@ def _load_namespace_approved_release_items(
             race_obj = PcsRaceCalendar.query.filter_by(id=race_id).first()
             if race_obj is None or (season_year is not None and race_obj.season_year != season_year):
                 continue
-            scope_type = 'stage' if stage_id > 0 else 'race'
+            scope_type = 'stage' if external_stage_id is not None else 'race'
             display_name = race_obj.name or f'Race #{race_id}'
-            if stage_id > 0:
-                display_name = f'{display_name} - Stage {stage_id}'
+            if external_stage_id is not None:
+                stage_label = 'Prologue' if external_stage_id == '0' else f'Stage {external_stage_id}'
+                display_name = f'{display_name} - {stage_label}'
             item_date = race_obj.start_date or '-'
             category = race_obj.category_label or '-'
             classification_label = _pcs_race_classification_label(
@@ -2449,7 +2468,7 @@ def _load_namespace_approved_release_items(
             ) or '-'
             detail_url = url_for(
                 'web.stats_editor_race_detail_by_source', source='pcs', race_id=race_id,
-                pcs_stage=stage_id if stage_id > 0 else None,
+                pcs_stage=external_stage_id,
             )
         else:
             continue
@@ -6412,7 +6431,7 @@ def _load_activity_monitor_rider_detail(selected_namespace, rider_id, back_url):
                 path = urllib.parse.urlsplit(str(value or '')).path.rstrip('/')
                 path = re.sub(r'-(\d{4})-re?$', r'-\1', path, flags=re.I)
                 path = re.sub(r'-(?:res(?:u(?:l(?:t)?)?)?|gc)$', '', path, flags=re.I)
-                path = re.sub(r'-stage-\d+$', '', path, flags=re.I)
+                path = re.sub(r'-stage-\d+[a-z]?$', '', path, flags=re.I)
                 return path.casefold()
 
             pcs_result_rows = [
@@ -6678,7 +6697,7 @@ def _load_activity_monitor_rider_detail(selected_namespace, rider_id, back_url):
         if not race_url:
             return None
         path = urllib.parse.urlsplit(race_url).path.rstrip('/')
-        path = re.sub(r'-(?:gc|stage-\d+)$', '', path, flags=re.IGNORECASE)
+        path = re.sub(r'-(?:gc|stage-\d+[a-z]?)$', '', path, flags=re.IGNORECASE)
         return path.casefold()
 
 
@@ -7896,7 +7915,7 @@ def rider_detail(rider_id):
                     path = re.sub(r'/(?:result|results|gc)$', '', path, flags=re.I)
                     path = re.sub(r'-(\d{4})-re?$', r'-\1', path, flags=re.I)
                     path = re.sub(r'-(?:res(?:u(?:l(?:t)?)?)?|gc)$', '', path, flags=re.I)
-                    path = re.sub(r'-stage-\d+$', '', path, flags=re.I)
+                    path = re.sub(r'-stage-\d+[a-z]?$', '', path, flags=re.I)
                     return path.casefold()
 
                 race_ids_by_path = {}
@@ -7947,12 +7966,18 @@ def rider_detail(rider_id):
                         page_query = page_query.options(undefer(PcsRaceResultPage.parcours_type))
                     if tt_column_available:
                         page_query = page_query.options(undefer(PcsRaceResultPage.time_trial_type))
+                    precedence_available = pcs_profile_precedence_columns_available()
+                    if precedence_available:
+                        page_query = page_query.options(
+                            undefer(PcsRaceResultPage.firstcycling_profile),
+                            undefer(PcsRaceResultPage.manual_parcours_type),
+                            undefer(PcsRaceResultPage.manual_profile_override),
+                            undefer(PcsRaceResultPage.manual_time_trial_type_override),
+                        )
                     for page in page_query.all():
                         scope = (page.pcs_race_id, page.stage_key)
-                        profile = page.parcours_type if profile_column_available else None
-                        time_trial_type = (
-                            page.time_trial_type if tt_column_available else None
-                        )
+                        profile = _pcs_page_profile(page) if profile_column_available else None
+                        time_trial_type = _pcs_page_time_trial_type(page) if tt_column_available else None
                         for result in pcs_profile_results:
                             if result.get('pcs_profile_scope') == scope:
                                 result['profile_display'] = _clean_pcs_profile(profile)
@@ -8275,17 +8300,219 @@ def rider_detail_save_stats(rider_id):
 
 
 STATS_EDITOR_FILTER_FIELDS = (
-    'race_year',
+    'race_year_values',
+    'race_year_mode',
+    'month_values',
+    'month_mode',
     'race_name',
-    'classification',
-    'profile',
-    'nation',
+    'classification_values',
+    'classification_mode',
+    'profile_values',
+    'profile_mode',
+    'nation_values',
+    'nation_mode',
+    'source_values',
+    'source_mode',
     'junior_race',
     'start_date_from',
     'start_date_to',
-    'is_stage_race',
+    'race_type_values',
+    'race_type_mode',
     'has_time_trial',
+    'distance_min',
+    'distance_max',
 )
+
+STATS_EDITOR_MULTI_FILTERS = {
+    'race_year_values': 'include',
+    'month_values': 'include',
+    'classification_values': 'include',
+    'profile_values': 'include',
+    'nation_values': 'include',
+    'source_values': 'include',
+    'race_type_values': 'include',
+}
+
+
+def _stats_editor_filter_values(values):
+    if isinstance(values, str):
+        values = [values]
+    return [
+        str(value).strip()[:120]
+        for value in (values or [])
+        if str(value or '').strip()
+    ][:100]
+
+
+def _stats_editor_filter_mode(value):
+    return 'exclude' if str(value or '').strip().lower() == 'exclude' else 'include'
+
+
+def _stats_editor_distance_filter_bound(raw_value):
+    raw_value = str(raw_value or '').strip().replace(',', '.')
+    try:
+        value = float(raw_value) if raw_value else None
+    except ValueError:
+        return None
+    if value is None or value < 0 or value > 10000:
+        return None
+    return value
+
+
+def _stats_editor_pcs_filter_candidate_ids(
+    race_ids, profile_values, profile_mode, distance_min, distance_max,
+):
+    """Find a safe superset of PCS races matching cached-page filters.
+
+    Read only the small fields needed for profile/distance filtering first.
+    The caller still applies the existing exact Python filters after loading
+    full pages for these candidates, so ambiguous multi-day overall pages can
+    add candidates but cannot remove a true match.
+    """
+    profile_values = _stats_editor_filter_values(profile_values)
+    include_profile_values = bool(profile_values) and profile_mode == 'include'
+    distance_filter_active = distance_min is not None or distance_max is not None
+    if not include_profile_values and not distance_filter_active:
+        return None, None
+    if not race_ids:
+        return set(), set()
+
+    parcours_type_available = pcs_parcours_type_column_available()
+    precedence_available = pcs_profile_precedence_columns_available()
+    distance_override_available = pcs_distance_override_column_available()
+    source_distance_available = pcs_source_distance_column_available()
+    firstcycling_distance_available = pcs_firstcycling_distance_column_available()
+
+    columns = [
+        PcsRaceResultPage.pcs_race_id.label('race_id'),
+        PcsRaceResultPage.stage_key.label('stage_key'),
+    ]
+    if parcours_type_available:
+        columns.append(PcsRaceResultPage.parcours_type.label('parcours_type'))
+    if parcours_type_available and precedence_available:
+        columns.extend((
+            PcsRaceResultPage.firstcycling_profile.label('firstcycling_profile'),
+            PcsRaceResultPage.manual_parcours_type.label('manual_parcours_type'),
+            PcsRaceResultPage.manual_profile_override.label('manual_profile_override'),
+        ))
+    if distance_filter_active:
+        if distance_override_available:
+            columns.append(PcsRaceResultPage.distance_km_override.label('distance_override'))
+        if source_distance_available:
+            columns.append(PcsRaceResultPage.source_distance_km.label('source_distance'))
+        if firstcycling_distance_available:
+            columns.append(PcsRaceResultPage.firstcycling_distance_km.label('firstcycling_distance'))
+        else:
+            columns.append(
+                func.json_extract_path_text(
+                    PcsRaceResultPage.payload, 'distance_km',
+                ).label('payload_distance')
+            )
+
+    page_rows = db.session.query(*columns).filter(
+        PcsRaceResultPage.pcs_race_id.in_(race_ids),
+    ).all()
+    profile_values_available = set()
+    profile_candidate_ids = set() if include_profile_values else None
+    distance_candidate_ids = set() if distance_filter_active else None
+    same_page_candidate_ids = (
+        set() if include_profile_values and distance_filter_active else None
+    )
+
+    for row in page_rows:
+        values = row._mapping
+        race_id = values['race_id']
+        stage_key = values['stage_key'] or ''
+        profile = None
+        if parcours_type_available:
+            if precedence_available:
+                profile = _effective_profile(SimpleNamespace(
+                    parcours_type=values['parcours_type'],
+                    firstcycling_profile=values['firstcycling_profile'],
+                    manual_parcours_type=values['manual_parcours_type'],
+                    manual_profile_override=values['manual_profile_override'],
+                ))
+            else:
+                profile = values['parcours_type']
+            profile = _clean_pcs_profile(profile)
+        if profile:
+            profile_values_available.add(profile)
+        profile_matches = include_profile_values and (
+            profile or '-' in profile_values
+        ) and _stats_editor_value_matches(
+            profile or '-', profile_values, profile_mode,
+        )
+        if profile_matches:
+            profile_candidate_ids.add(race_id)
+
+        if distance_filter_active:
+            distance_candidates = []
+            if distance_override_available:
+                distance_candidates.append(values['distance_override'])
+            if firstcycling_distance_available:
+                distance_candidates.append(values['firstcycling_distance'])
+            if source_distance_available:
+                distance_candidates.append(values['source_distance'])
+            if not source_distance_available:
+                distance_candidates.append(values['payload_distance'])
+            distance = next((
+                normalized for normalized in map(_round_pcs_distance, distance_candidates)
+                if normalized is not None
+            ), None)
+            distance_matches = (
+                distance is not None
+                and (distance_min is None or distance >= distance_min)
+                and (distance_max is None or distance <= distance_max)
+            )
+            if distance_matches:
+                distance_candidate_ids.add(race_id)
+            if profile_matches and distance_matches:
+                same_page_candidate_ids.add(race_id)
+
+    if same_page_candidate_ids is not None:
+        candidate_ids = same_page_candidate_ids
+    else:
+        candidate_ids = profile_candidate_ids
+    if same_page_candidate_ids is None and distance_candidate_ids is not None:
+        candidate_ids = (
+            distance_candidate_ids
+            if candidate_ids is None
+            else candidate_ids.intersection(distance_candidate_ids)
+        )
+    return candidate_ids, profile_values_available
+
+
+def _stats_editor_apply_multi_filter(query, column, values, mode='include', *, include_nulls=False):
+    values = _stats_editor_filter_values(values)
+    if not values:
+        return query
+    if mode == 'exclude':
+        condition = column.notin_(values)
+        if include_nulls:
+            condition = or_(column.is_(None), condition)
+        return query.filter(condition)
+    return query.filter(column.in_(values))
+
+
+def _stats_editor_value_matches(value, values, mode='include'):
+    values = set(_stats_editor_filter_values(values))
+    if not values:
+        return True
+    if isinstance(value, (set, list, tuple)):
+        matched = bool({str(item) for item in value}.intersection(values))
+    else:
+        matched = str(value if value is not None else '-') in values
+    return not matched if mode == 'exclude' else matched
+
+
+def _stats_editor_category_value(race):
+    """Return the Stats Editor category, with the agreed special labels."""
+    name = str(getattr(race, 'name', '') or '')
+    if re.search(r'\bNCK\b', name, re.I):
+        return '-'
+    if getattr(race, 'category_label', None) == 'Championships':
+        return 'WC'
+    return str(getattr(race, 'classification', None) or '-').strip() or '-'
 
 
 def _stats_editor_session_key(namespace):
@@ -8294,16 +8521,27 @@ def _stats_editor_session_key(namespace):
 
 def _default_stats_editor_race_filters():
     return {
-        'race_year': '',
+        'race_year_values': None,
+        'race_year_mode': 'include',
+        'month_values': [],
+        'month_mode': 'include',
         'race_name': '',
-        'classification': '',
-        'profile': '',
-        'nation': '',
+        'classification_values': [],
+        'classification_mode': 'include',
+        'profile_values': [],
+        'profile_mode': 'include',
+        'nation_values': [],
+        'nation_mode': 'include',
+        'source_values': [],
+        'source_mode': 'include',
         'junior_race': '',
         'start_date_from': '',
         'start_date_to': '',
-        'is_stage_race': '',
+        'race_type_values': [],
+        'race_type_mode': 'include',
         'has_time_trial': '',
+        'distance_min': '',
+        'distance_max': '',
         'edit_statuses': [],
     }
 
@@ -8316,10 +8554,41 @@ def _load_stats_editor_state(namespace):
         active_method = 'by_race'
 
     filters = _default_stats_editor_race_filters()
+    saved_filters = state.get('race_filters') or {}
     filters.update({
-        key: (state.get('race_filters') or {}).get(key, filters[key])
+        key: saved_filters.get(key, filters[key])
         for key in STATS_EDITOR_FILTER_FIELDS
     })
+    # Preserve filter selections saved before the multi-select UI was added.
+    if 'race_year_values' not in saved_filters and saved_filters.get('race_year'):
+        filters['race_year_values'] = [saved_filters['race_year']]
+        legacy_year = _safe_int(saved_filters.get('race_year'))
+        if legacy_year and (
+            saved_filters.get('start_date_from') == f'{legacy_year}-01-01'
+            and saved_filters.get('start_date_to') == f'{legacy_year}-12-31'
+        ):
+            filters['start_date_from'] = ''
+            filters['start_date_to'] = ''
+    for old_key, new_key in (
+        ('classification', 'classification_values'),
+        ('profile', 'profile_values'),
+        ('nation', 'nation_values'),
+    ):
+        if new_key not in saved_filters and saved_filters.get(old_key):
+            filters[new_key] = [saved_filters[old_key]]
+    filters['classification_values'] = [
+        '-' if value == '__unclassified__' else value
+        for value in _stats_editor_filter_values(filters['classification_values'])
+    ]
+    if 'race_type_values' not in saved_filters and saved_filters.get('is_stage_race') in ('true', 'false'):
+        filters['race_type_values'] = [
+            'multiday' if saved_filters['is_stage_race'] == 'true' else 'one_day'
+        ]
+    for key in STATS_EDITOR_MULTI_FILTERS:
+        if filters[key] is not None:
+            filters[key] = _stats_editor_filter_values(filters[key])
+        mode_key = key.replace('_values', '_mode')
+        filters[mode_key] = _stats_editor_filter_mode(filters.get(mode_key))
     filters['edit_statuses'] = [
         'waiting_edits' if value in ('no_edits', 'pending_edits') else value
         for value in (state.get('race_filters') or {}).get('edit_statuses', filters['edit_statuses'])
@@ -8446,7 +8715,9 @@ def stats_editor():
             next_state['active_method'] = 'by_race'
             next_state['race_filters'] = _default_stats_editor_race_filters()
             next_state['race_filters'].update({
-                'classification': (request.form.get('classification', type=str) or '').strip(),
+                'classification_values': [
+                    (request.form.get('classification', type=str) or '').strip()
+                ] if (request.form.get('classification', type=str) or '').strip() else [],
                 'start_date_to': datetime.utcnow().date().isoformat(),
                 'edit_statuses': ['waiting_edits'],
             })
@@ -8461,7 +8732,13 @@ def stats_editor():
             valid_edit_statuses = ('waiting_edits', 'no_edits', 'pending_edits', 'pending_approval', 'approved')
             next_state['active_method'] = 'by_race'
             next_state['race_filters'] = {
-                key: (request.form.get(key, type=str) or '').strip()
+                key: (
+                    _stats_editor_filter_values(request.form.getlist(key))
+                    if key in STATS_EDITOR_MULTI_FILTERS
+                    else _stats_editor_filter_mode(request.form.get(key, type=str))
+                    if key.endswith('_mode')
+                    else (request.form.get(key, type=str) or '').strip()
+                )
                 for key in STATS_EDITOR_FILTER_FIELDS
             }
             next_state['race_filters']['edit_statuses'] = [
@@ -8502,55 +8779,47 @@ def stats_editor():
         'profiles': [],
         'has_unclassified': False,
         'nations': [],
+        'sources': ['Amateur', 'UCI'],
     }
 
     selected_filters = dict(editor_state['race_filters'])
     selected_edit_statuses = selected_filters['edit_statuses']
-    requested_race_year_value = str(selected_filters.get('race_year') or '').strip().lower()
-    had_selected_race_year = requested_race_year_value == 'all' or bool(
-        _safe_int(requested_race_year_value)
-    )
     available_race_years = []
     if pcs_calendar_available:
         available_race_years = [
             year for (year,) in db.session.query(PcsRaceCalendar.season_year)
             .distinct().order_by(PcsRaceCalendar.season_year.desc()).all()
         ]
-    requested_race_year = _safe_int(requested_race_year_value)
-    if requested_race_year_value == 'all':
-        selected_race_year = None
-        selected_filters['race_year'] = 'all'
-    elif requested_race_year not in available_race_years:
+    if selected_filters['race_year_values'] is None:
         current_year = date.today().year
-        requested_race_year = (
+        default_year = (
             current_year if current_year in available_race_years
             else available_race_years[0] if available_race_years
             else selected_year
         )
-        selected_race_year = requested_race_year
-        selected_filters['race_year'] = str(selected_race_year or '')
-    else:
-        selected_race_year = requested_race_year
-        selected_filters['race_year'] = str(selected_race_year or '')
-    if not had_selected_race_year and selected_race_year is not None:
-        legacy_start = selected_filters.get('start_date_from', '')
-        legacy_end = selected_filters.get('start_date_to', '')
-        if (
-            legacy_start.endswith('-01-01')
-            and legacy_end == legacy_start[:4] + '-12-31'
-            and legacy_start[:4] != str(selected_race_year)
-        ):
-            selected_filters['start_date_from'] = ''
-            selected_filters['start_date_to'] = ''
+        selected_filters['race_year_values'] = [str(default_year)] if default_year else []
+    valid_years = {str(year) for year in available_race_years}
+    selected_filters['race_year_values'] = [
+        value for value in _stats_editor_filter_values(selected_filters['race_year_values'])
+        if value in valid_years
+    ]
+    selected_filters['month_values'] = [
+        str(int(value)) for value in _stats_editor_filter_values(selected_filters['month_values'])
+        if value.isdigit() and 1 <= int(value) <= 12
+    ]
+    selected_race_year = (
+        _safe_int(selected_filters['race_year_values'][0])
+        if len(selected_filters['race_year_values']) == 1 else None
+    )
+    selected_filters['race_year_mode'] = _stats_editor_filter_mode(selected_filters['race_year_mode'])
+    selected_filters['month_mode'] = _stats_editor_filter_mode(selected_filters['month_mode'])
+    distance_filter_requested = bool(
+        str(selected_filters.get('distance_min') or '').strip()
+        or str(selected_filters.get('distance_max') or '').strip()
+    )
+    pcs_preloaded_profile_values = None
 
     if season_selected and active_method == 'by_race':
-        if not selected_filters['start_date_from'] and not selected_filters['start_date_to']:
-            if selected_race_year is not None:
-                selected_filters['start_date_from'] = f'{selected_race_year}-01-01'
-                selected_filters['start_date_to'] = f'{selected_race_year}-12-31'
-        elif selected_race_year is not None and not selected_filters['start_date_to']:
-            selected_filters['start_date_to'] = f'{selected_race_year}-12-31'
-
         parsed_start_date_from = None
         parsed_start_date_to = None
         if selected_filters['start_date_from']:
@@ -8566,21 +8835,34 @@ def stats_editor():
 
         if pcs_calendar_available and _normalize_gender_token(selected_gender) == 'men':
             nations_query = PcsRaceCalendar.query
-            if selected_race_year is not None:
-                nations_query = nations_query.filter_by(season_year=selected_race_year)
             filter_choices['nations'] = [
                 value for (value,) in nations_query.with_entities(PcsRaceCalendar.nation_name)
                 .distinct().order_by(PcsRaceCalendar.nation_name).all() if value
             ]
         if pcs_calendar_available and _normalize_gender_token(selected_gender) == 'men':
             pcs_query = PcsRaceCalendar.query
-            if selected_race_year is not None:
-                pcs_query = pcs_query.filter_by(season_year=selected_race_year)
+            year_numbers = [int(value) for value in selected_filters['race_year_values']]
+            if year_numbers:
+                year_condition = PcsRaceCalendar.season_year.in_(year_numbers)
+                pcs_query = pcs_query.filter(
+                    ~year_condition if selected_filters['race_year_mode'] == 'exclude'
+                    else year_condition
+                )
+            month_column = func.extract('month', PcsRaceCalendar.start_date)
+            month_numbers = [int(value) for value in selected_filters['month_values']]
+            if month_numbers:
+                month_condition = month_column.in_(month_numbers)
+                if selected_filters['month_mode'] == 'exclude':
+                    month_condition = or_(PcsRaceCalendar.start_date.is_(None), ~month_condition)
+                pcs_query = pcs_query.filter(month_condition)
             if selected_filters['race_name']:
                 search_term = _normalize_name_search_term(selected_filters['race_name'])
                 pcs_query = pcs_query.filter(_normalized_name_expr(PcsRaceCalendar.name).like(f"%{search_term}%"))
-            if selected_filters['nation']:
-                pcs_query = pcs_query.filter(PcsRaceCalendar.nation_name == selected_filters['nation'])
+            pcs_query = _stats_editor_apply_multi_filter(
+                pcs_query, PcsRaceCalendar.nation_name,
+                selected_filters['nation_values'], selected_filters['nation_mode'],
+                include_nulls=True,
+            )
             if selected_filters['junior_race'] in ('true', 'false'):
                 pcs_query = pcs_query.filter(
                     PcsRaceCalendar.is_junior_race.is_(
@@ -8591,33 +8873,33 @@ def stats_editor():
                 pcs_query = pcs_query.filter(PcsRaceCalendar.start_date >= parsed_start_date_from)
             if parsed_start_date_to is not None:
                 pcs_query = pcs_query.filter(PcsRaceCalendar.start_date <= parsed_start_date_to)
+            nck_category = PcsRaceCalendar.name.op('~*')(r'\mNCK\M')
+            category_expression = case(
+                (nck_category, '-'),
+                (PcsRaceCalendar.category_label == 'Championships', 'WC'),
+                else_=func.coalesce(
+                    func.nullif(func.trim(PcsRaceCalendar.classification), ''),
+                    '-',
+                ),
+            )
             category_values = {
-                value or '-'
-                for (value,) in pcs_query.with_entities(PcsRaceCalendar.classification)
-                .distinct().all()
+                value for (value,) in PcsRaceCalendar.query.with_entities(
+                    category_expression,
+                ).distinct().all() if value
             }
             filter_choices['categories'] = sorted(category_values, key=str.casefold)
-            if selected_filters['classification'] == '__unclassified__':
-                selected_filters['classification'] = '-'
-            if selected_filters['classification'] not in category_values:
-                selected_filters['classification'] = ''
-            if selected_filters['classification'] == '-':
-                pcs_query = pcs_query.filter(or_(
-                    PcsRaceCalendar.classification.is_(None),
-                    PcsRaceCalendar.classification == '',
-                ))
-            elif selected_filters['classification']:
-                pcs_query = pcs_query.filter(
-                    PcsRaceCalendar.classification == selected_filters['classification'],
-                )
 
             # Filters based on cached page contents and namespace workflow
             # still need a complete candidate set. The ordinary view can
             # instead load just one ordered server-side page.
             server_paginated_races = not (
-                selected_filters['profile']
-                or selected_filters['has_time_trial'] == 'true'
-                or selected_filters['is_stage_race']
+                selected_filters['profile_values']
+                or selected_filters['has_time_trial'] in ('true', 'false')
+                or selected_filters['race_type_values']
+                or selected_filters['classification_values']
+                or selected_filters['source_values']
+                or selected_filters['distance_min']
+                or selected_filters['distance_max']
                 or selected_edit_statuses
             )
             total_race_count = pcs_query.count()
@@ -8625,6 +8907,34 @@ def stats_editor():
                 PcsRaceCalendar.start_date.asc().nullslast(),
                 func.lower(PcsRaceCalendar.name).asc(),
             )
+            pcs_preloaded_profile_values = None
+            candidate_filter_active = (
+                (
+                    bool(selected_filters['profile_values'])
+                    and _stats_editor_filter_mode(selected_filters['profile_mode']) == 'include'
+                )
+                or _stats_editor_distance_filter_bound(selected_filters['distance_min']) is not None
+                or _stats_editor_distance_filter_bound(selected_filters['distance_max']) is not None
+            )
+            if not server_paginated_races and candidate_filter_active:
+                calendar_race_ids = [
+                    race_id for (race_id,) in ordered_pcs_query.with_entities(
+                        PcsRaceCalendar.id,
+                    ).all()
+                ]
+                candidate_race_ids, pcs_preloaded_profile_values = (
+                    _stats_editor_pcs_filter_candidate_ids(
+                        calendar_race_ids,
+                        selected_filters['profile_values'],
+                        _stats_editor_filter_mode(selected_filters['profile_mode']),
+                        _stats_editor_distance_filter_bound(selected_filters['distance_min']),
+                        _stats_editor_distance_filter_bound(selected_filters['distance_max']),
+                    )
+                )
+                if candidate_race_ids is not None:
+                    ordered_pcs_query = ordered_pcs_query.filter(
+                        PcsRaceCalendar.id.in_(candidate_race_ids),
+                    )
             if server_paginated_races:
                 requested_limit = request.args.get('race_limit', default=100, type=int) or 100
                 race_page_limit = min(max(requested_limit, 100), max(total_race_count, 100))
@@ -8636,56 +8946,151 @@ def stats_editor():
             pcs_cached_stage_keys = {}
             pcs_cached_overall = set()
             pcs_overall_stage_numbers = {}
+            pcs_overall_stages = {}
             pcs_overall_payloads = {}
             pcs_overall_tt_types = {}
+            pcs_overall_tt_overrides = {}
             pcs_overall_profiles = {}
+            pcs_cached_pages_by_key = {}
             pcs_time_trial_race_ids = set()
             pcs_race_profiles = {}
+            pcs_stage_profiles = {}
+            pcs_stage_distances = {}
             pcs_race_ids = [pcs_race.id for pcs_race in pcs_race_records]
+            defer_cached_page_payloads = False
             if pcs_race_ids:
-                cached_pages_query = PcsRaceResultPage.query.filter(
-                    PcsRaceResultPage.pcs_race_id.in_(pcs_race_ids),
-                )
+                distance_override_available = pcs_distance_override_column_available()
+                source_distance_available = pcs_source_distance_column_available()
+                firstcycling_distance_available = pcs_firstcycling_distance_column_available()
                 parcours_type_available = pcs_parcours_type_column_available()
-                if parcours_type_available:
-                    cached_pages_query = cached_pages_query.options(
-                        undefer(PcsRaceResultPage.parcours_type),
+                time_trial_type_available = pcs_time_trial_type_column_available()
+                defer_cached_page_payloads = (
+                    source_distance_available
+                    and parcours_type_available
+                    and time_trial_type_available
+                )
+                precedence_available = pcs_profile_precedence_columns_available()
+                cached_page_columns = [
+                    PcsRaceResultPage.pcs_race_id.label('pcs_race_id'),
+                    PcsRaceResultPage.stage_key.label('stage_key'),
+                ]
+                if not defer_cached_page_payloads:
+                    cached_page_columns.append(
+                        PcsRaceResultPage.payload.label('payload'),
                     )
-                cached_pages = cached_pages_query.all()
+                for available, column in (
+                    (distance_override_available, PcsRaceResultPage.distance_km_override),
+                    (source_distance_available, PcsRaceResultPage.source_distance_km),
+                    (firstcycling_distance_available, PcsRaceResultPage.firstcycling_distance_km),
+                    (parcours_type_available, PcsRaceResultPage.parcours_type),
+                    (time_trial_type_available, PcsRaceResultPage.time_trial_type),
+                ):
+                    if available:
+                        cached_page_columns.append(column.label(column.key))
+                if precedence_available:
+                    cached_page_columns.extend((
+                        PcsRaceResultPage.firstcycling_profile.label('firstcycling_profile'),
+                        PcsRaceResultPage.manual_parcours_type.label('manual_parcours_type'),
+                        PcsRaceResultPage.manual_profile_override.label('manual_profile_override'),
+                        PcsRaceResultPage.manual_time_trial_type_override.label(
+                            'manual_time_trial_type_override',
+                        ),
+                    ))
+                cached_page_rows = db.session.query(*cached_page_columns).filter(
+                    PcsRaceResultPage.pcs_race_id.in_(pcs_race_ids),
+                ).all()
+                cached_pages = [
+                    SimpleNamespace(**row._mapping) for row in cached_page_rows
+                ]
+                if defer_cached_page_payloads:
+                    pcs_overall_stages.update({
+                        race_id: stages or []
+                        for race_id, stages in PcsRaceResultPage.query.with_entities(
+                            PcsRaceResultPage.pcs_race_id,
+                            PcsRaceResultPage.payload['stages'],
+                        ).filter(
+                            PcsRaceResultPage.pcs_race_id.in_(pcs_race_ids),
+                            PcsRaceResultPage.stage_key == 'overall',
+                        ).all()
+                    })
+                pcs_cached_pages_by_key = {
+                    (page.pcs_race_id, page.stage_key): page
+                    for page in cached_pages
+                }
                 pcs_multiday_race_ids = {
                     race.id for race in pcs_race_records
                     if race.start_date and race.end_date and race.end_date > race.start_date
                 }
                 for page in cached_pages:
                     if page.stage_key == 'overall':
-                        payload_stages = (page.payload or {}).get('stages') or []
+                        payload = (
+                            pcs_overall_payloads.get(page.pcs_race_id, {})
+                            if defer_cached_page_payloads else page.payload or {}
+                        )
+                        payload_stages = (
+                            pcs_overall_stages.get(page.pcs_race_id, [])
+                            if defer_cached_page_payloads else payload.get('stages') or []
+                        )
                         if sum(
                             1 for stage in payload_stages
                             if stage.get('stage_number') is not None and not stage.get('is_overall')
                         ) > 1:
                             pcs_multiday_race_ids.add(page.pcs_race_id)
-                stored_tt_types = {}
-                if pcs_time_trial_type_column_available():
-                    stored_tt_types = {
-                        (race_id, stage_key): value
-                        for race_id, stage_key, value in db.session.query(
-                            PcsRaceResultPage.pcs_race_id,
-                            PcsRaceResultPage.stage_key,
-                            PcsRaceResultPage.time_trial_type,
-                        ).filter(PcsRaceResultPage.pcs_race_id.in_(pcs_race_ids)).all()
-                    }
                 for page in cached_pages:
-                    payload = page.payload or {}
-                    profile_value = _clean_pcs_profile(
-                        page.parcours_type if parcours_type_available else None
+                    payload = (
+                        pcs_overall_payloads.get(page.pcs_race_id, {})
+                        if defer_cached_page_payloads and page.stage_key == 'overall'
+                        else (page.payload or {}) if not defer_cached_page_payloads
+                        else {}
                     )
+                    if distance_filter_requested and (
+                        page.stage_key.startswith('stage:') or (
+                            page.stage_key == 'overall'
+                            and page.pcs_race_id not in pcs_multiday_race_ids
+                        )
+                    ):
+                        candidates = (
+                            getattr(page, 'distance_km_override', None)
+                            if distance_override_available else None,
+                            getattr(page, 'firstcycling_distance_km', None)
+                            if firstcycling_distance_available else None,
+                            getattr(page, 'source_distance_km', None)
+                            if source_distance_available else None,
+                            payload.get('distance_km') if not source_distance_available else None,
+                        )
+                        stage_distance = next((
+                            normalized for normalized in map(_round_pcs_distance, candidates)
+                            if normalized is not None
+                        ), None)
+                        if stage_distance is not None:
+                            stage_id = (
+                                page.stage_key.split(':', 1)[1]
+                                if page.stage_key.startswith('stage:') else 'overall'
+                            )
+                            pcs_stage_distances.setdefault(page.pcs_race_id, {})[
+                                stage_id
+                            ] = stage_distance
+                    profile_value = _pcs_page_profile(page) if parcours_type_available else None
+                    if page.stage_key.startswith('stage:') or (
+                        page.stage_key == 'overall'
+                        and page.pcs_race_id not in pcs_multiday_race_ids
+                    ):
+                        stage_id = (
+                            page.stage_key.split(':', 1)[1]
+                            if page.stage_key.startswith('stage:') else 'overall'
+                        )
+                        pcs_stage_profiles.setdefault(page.pcs_race_id, {})[
+                            stage_id
+                        ] = profile_value or '-'
                     if profile_value:
                         pcs_race_profiles.setdefault(page.pcs_race_id, set()).add(profile_value)
                         if page.stage_key == 'overall':
                             pcs_overall_profiles[page.pcs_race_id] = profile_value
-                    time_trial_type = stored_tt_types.get(
-                        (page.pcs_race_id, page.stage_key),
-                    ) if stored_tt_types else pcs_time_trial_type(payload.get('stage_type'))
+                    time_trial_type = (
+                        _pcs_page_time_trial_type(page)
+                        if time_trial_type_available or precedence_available
+                        else pcs_time_trial_type(payload.get('stage_type'))
+                    )
                     if time_trial_type and (
                         page.stage_key != 'overall'
                         or page.pcs_race_id not in pcs_multiday_race_ids
@@ -8693,11 +9098,19 @@ def stats_editor():
                         pcs_time_trial_race_ids.add(page.pcs_race_id)
                     if page.stage_key == 'overall':
                         pcs_overall_tt_types[page.pcs_race_id] = time_trial_type
+                        pcs_overall_tt_overrides[page.pcs_race_id] = (
+                            getattr(page, 'manual_time_trial_type_override', None)
+                            if precedence_available else None
+                        )
                         pcs_cached_overall.add(page.pcs_race_id)
-                        pcs_overall_payloads[page.pcs_race_id] = payload
-                        cached_stages = payload.get('stages') or []
+                        if not defer_cached_page_payloads:
+                            pcs_overall_payloads[page.pcs_race_id] = payload
+                        cached_stages = (
+                            pcs_overall_stages.get(page.pcs_race_id, [])
+                            if defer_cached_page_payloads else payload.get('stages') or []
+                        )
                         stage_numbers = {
-                            int(stage['stage_number'])
+                            str(stage.get('stage_id') or stage.get('stage_number')).lower()
                             for stage in cached_stages
                             if stage.get('stage_number') is not None and not stage.get('is_overall')
                         }
@@ -8705,7 +9118,7 @@ def stats_editor():
                         pcs_stage_counts[page.pcs_race_id] = len(stage_numbers)
                     elif page.stage_key.startswith('stage:'):
                         try:
-                            stage_number = int(page.stage_key.split(':', 1)[1])
+                            stage_number = page.stage_key.split(':', 1)[1].lower()
                         except (TypeError, ValueError):
                             continue
                         pcs_cached_stage_keys.setdefault(page.pcs_race_id, set()).add(stage_number)
@@ -8735,11 +9148,6 @@ def stats_editor():
                 totals[0] += value['total_changes']
                 totals[1] += value['approved_changes']
             pcs_races = []
-            winner_matcher = PcsRiderMatcher(selected_namespace) if selected_namespace else None
-            winner_name_index = (
-                _load_stats_editor_rider_name_index(selected_namespace)
-                if selected_namespace else {}
-            )
             for pcs_race in pcs_race_records:
                 total_changes, approved_changes = pcs_delta_totals.get(
                     str(pcs_race.id), (0, 0),
@@ -8784,40 +9192,57 @@ def stats_editor():
                     pcs_stage_count_known=pcs_race.id in pcs_overall_stage_numbers,
                     pcs_url=pcs_race.result_url,
                     category_label=pcs_race.category_label,
+                    stats_editor_category=_stats_editor_category_value(pcs_race),
                     pcs_stage_count=pcs_stage_counts.get(pcs_race.id, 0),
                     display_classification=_pcs_race_classification_label(
                         pcs_race.category_label, pcs_race.start_date, pcs_race.end_date,
                     ),
                     time_trial_type=None,
+                    manual_tt_override=pcs_overall_tt_overrides.get(pcs_race.id),
                     parcours_type=_clean_pcs_profile(
                         pcs_overall_profiles.get(pcs_race.id),
                     ),
                     profile_filter_values=pcs_race_profiles.get(pcs_race.id, set()),
+                    stage_profiles=pcs_stage_profiles.get(pcs_race.id, {}),
                     has_time_trial=pcs_race.id in pcs_time_trial_race_ids,
+                    stage_distances=pcs_stage_distances.get(pcs_race.id, {}),
+                    distance_matching_stage_ids=set(),
                     winner_name=None,
                     distance_km=None,
+                    _winner_source=None,
                 )
                 overall_payload = pcs_overall_payloads.get(pcs_race.id, {})
-                if overall_payload:
+                if overall_payload or (
+                    defer_cached_page_payloads
+                    and pcs_race.id in pcs_cached_overall
+                ):
                     if not is_multi_day:
                         race.time_trial_type = pcs_overall_tt_types.get(pcs_race.id)
                     if not pcs_time_trial_type_column_available():
                         if not is_multi_day:
                             race.time_trial_type = pcs_time_trial_type(overall_payload.get('stage_type'))
                     if not is_multi_day:
-                        race.distance_km = _round_pcs_distance(overall_payload.get('distance_km'))
+                        overall_page = pcs_cached_pages_by_key.get(
+                            (pcs_race.id, 'overall'),
+                        )
+                        source_distance = (
+                            getattr(overall_page, 'source_distance_km', None)
+                            if source_distance_available
+                            else overall_payload.get('distance_km')
+                        )
+                        race.distance_km = _pcs_display_distance(
+                            pcs_race.id, 'overall', source_distance,
+                            page=overall_page,
+                        )
                     winner_row = next((
                         row for row in overall_payload.get('rows', [])
                         if row.get('position') == 1
                     ), None)
                     if winner_row:
-                        winner = _stats_editor_winner_link(
-                            winner_row.get('rider_name'), winner_row.get('pcs_rider_path'),
-                            selected_namespace, winner_matcher, winner_name_index,
+                        race._winner_source = (
+                            winner_row.get('rider_name'),
+                            winner_row.get('pcs_rider_path'),
                         )
-                        race.winner_name = winner['name']
-                        race.winner_url = winner['url']
-                        race.winner_in_cdb = winner['in_cdb']
                 flag_code = nationality_flag_code(pcs_race.nation_name)
                 if flag_code:
                     race_flag_map[race.id] = flag_code
@@ -8832,18 +9257,14 @@ def stats_editor():
             races.extend(pcs_races)
             races.sort(key=lambda race: (race.start_date or date.max, (race.name or '').casefold()))
 
-        if selected_filters['is_stage_race']:
-            wants_multi_day = selected_filters['is_stage_race'] == 'true'
-            races = [
-                race for race in races
-                if bool(getattr(race, 'is_multi_day', False)) == wants_multi_day
-            ]
-
         category_values = set(filter_choices['categories'])
         if not category_values:
-            category_values = {(race.classification or '-') for race in races}
+            category_values = {
+                _stats_editor_category_value(race) for race in races
+            }
             filter_choices['categories'] = sorted(category_values, key=str.casefold)
         for race in races:
+            race.stats_editor_category = _stats_editor_category_value(race)
             if getattr(race, 'is_pcs', False) and getattr(
                 race, 'pcs_stage_count_known', False,
             ):
@@ -8866,37 +9287,189 @@ def stats_editor():
                 if not is_multi_day
                 else None
             )
-        profile_values = {
+        profile_values = set(pcs_preloaded_profile_values or ())
+        profile_values.update({
             value
             for race in races
             for value in (
                 getattr(race, 'profile_filter_values', None)
                 or ({race.profile} if not getattr(race, 'is_pcs', False) and race.profile else set())
             )
-        }
+        })
         if not server_paginated_races and not filter_choices['profiles']:
             filter_choices['profiles'] = sorted(profile_values, key=str.casefold)
         filter_choices['has_unclassified'] = False
-        if not server_paginated_races and selected_filters['classification']:
+        selected_filters['classification_mode'] = _stats_editor_filter_mode(
+            selected_filters['classification_mode']
+        )
+        selected_filters['profile_mode'] = _stats_editor_filter_mode(selected_filters['profile_mode'])
+        selected_filters['nation_mode'] = _stats_editor_filter_mode(selected_filters['nation_mode'])
+        selected_filters['source_mode'] = _stats_editor_filter_mode(selected_filters['source_mode'])
+        selected_filters['race_type_mode'] = _stats_editor_filter_mode(selected_filters['race_type_mode'])
+
+        race_type_values = set(selected_filters['race_type_values'])
+        if race_type_values:
             races = [
                 race for race in races
-                if (race.classification or '-')
-                == selected_filters['classification']
-            ]
-        if selected_filters['profile'] not in profile_values:
-            selected_filters['profile'] = ''
-        if selected_filters['profile']:
-            races = [
-                race for race in races
-                if selected_filters['profile'] in (
-                    getattr(race, 'profile_filter_values', None)
-                    or ({race.profile} if not getattr(race, 'is_pcs', False) and race.profile else set())
+                if _stats_editor_value_matches(
+                    'multiday' if getattr(race, 'is_multi_day', False) else 'one_day',
+                    race_type_values, selected_filters['race_type_mode'],
                 )
             ]
-        if selected_filters['has_time_trial'] == 'true':
-            races = [race for race in races if getattr(race, 'has_time_trial', False)]
+        if selected_filters['classification_values']:
+            races = [
+                race for race in races
+                if _stats_editor_value_matches(
+                    race.stats_editor_category, selected_filters['classification_values'],
+                    selected_filters['classification_mode'],
+                )
+            ]
+        if selected_filters['source_values']:
+            races = [
+                race for race in races
+                if _stats_editor_value_matches(
+                    'Amateur' if race.stats_editor_category == '-' else 'UCI',
+                    selected_filters['source_values'], selected_filters['source_mode'],
+                )
+            ]
+        if selected_filters['profile_values']:
+            races = [
+                race for race in races
+                if (
+                    any(
+                        _stats_editor_value_matches(
+                            profile, selected_filters['profile_values'],
+                            selected_filters['profile_mode'],
+                        )
+                        for profile in (getattr(race, 'stage_profiles', {}) or {}).values()
+                    )
+                    if getattr(race, 'is_pcs', False) and getattr(race, 'is_multi_day', False)
+                    else _stats_editor_value_matches(
+                        getattr(race, 'profile_filter_values', None)
+                        or ({race.profile} if not getattr(race, 'is_pcs', False) and race.profile else set()),
+                        selected_filters['profile_values'], selected_filters['profile_mode'],
+                    )
+                )
+            ]
+        if selected_filters['has_time_trial'] in ('true', 'false'):
+            wants_tt = selected_filters['has_time_trial'] == 'true'
+            races = [
+                race for race in races
+                if bool(getattr(race, 'has_time_trial', False)) == wants_tt
+            ]
+        distance_min = None
+        distance_max = None
+        for key in ('distance_min', 'distance_max'):
+            raw = str(selected_filters.get(key) or '').strip().replace(',', '.')
+            value = _stats_editor_distance_filter_bound(raw)
+            if value is None:
+                selected_filters[key] = ''
+            elif key == 'distance_min':
+                distance_min = value
+                selected_filters[key] = f'{value:g}'
+            else:
+                distance_max = value
+                selected_filters[key] = f'{value:g}'
+        if (
+            distance_min is not None or distance_max is not None
+            or selected_filters['profile_values']
+        ):
+            filtered_races = []
+            for race in races:
+                if getattr(race, 'is_multi_day', False):
+                    distances = getattr(race, 'stage_distances', {}) or {}
+                    profiles = getattr(race, 'stage_profiles', {}) or {}
+                else:
+                    value = _round_pcs_distance(getattr(race, 'distance_km', None))
+                    distances = {'overall': value} if value is not None else {}
+                    profiles = getattr(race, 'stage_profiles', {}) or {}
+                    if not profiles and getattr(race, 'profile', None):
+                        profiles = {'overall': race.profile}
+                matching_stage_ids = {
+                    stage_id
+                    for stage_id in (set(distances) | set(profiles))
+                    if (
+                        not selected_filters['profile_values']
+                        or _stats_editor_value_matches(
+                            profiles.get(stage_id, '-'),
+                            selected_filters['profile_values'],
+                            selected_filters['profile_mode'],
+                        )
+                    )
+                    and (
+                        (distance_min is None and distance_max is None)
+                        or (
+                            stage_id in distances
+                            and distances[stage_id] is not None
+                            and (distance_min is None or distances[stage_id] >= distance_min)
+                            and (distance_max is None or distances[stage_id] <= distance_max)
+                        )
+                    )
+                }
+                if matching_stage_ids:
+                    race.distance_matching_stage_ids = matching_stage_ids
+                    filtered_races.append(race)
+            races = filtered_races
         if not server_paginated_races:
             total_race_count = len(races)
+            requested_limit = request.args.get('race_limit', default=100, type=int) or 100
+            race_page_limit = min(
+                max(requested_limit, 100), max(total_race_count, 100),
+            )
+            if total_race_count > race_page_limit:
+                races = races[:race_page_limit]
+                server_paginated_races = True
+
+        visible_winners = [
+            race for race in races if getattr(race, '_winner_source', None)
+        ]
+        if defer_cached_page_payloads:
+            visible_pcs_ids = [
+                race.pcs_race_id for race in races
+                if getattr(race, 'is_pcs', False)
+                and getattr(race, 'pcs_overall_cached', False)
+            ]
+            if visible_pcs_ids:
+                visible_overall_payloads = dict(
+                    PcsRaceResultPage.query.with_entities(
+                        PcsRaceResultPage.pcs_race_id,
+                        PcsRaceResultPage.payload,
+                    ).filter(
+                        PcsRaceResultPage.pcs_race_id.in_(visible_pcs_ids),
+                        PcsRaceResultPage.stage_key == 'overall',
+                    ).all()
+                )
+                for race in races:
+                    if not getattr(race, 'is_pcs', False):
+                        continue
+                    payload = visible_overall_payloads.get(race.pcs_race_id) or {}
+                    winner_row = next((
+                        row for row in payload.get('rows', [])
+                        if row.get('position') == 1
+                    ), None)
+                    if winner_row:
+                        race._winner_source = (
+                            winner_row.get('rider_name'),
+                            winner_row.get('pcs_rider_path'),
+                        )
+                visible_winners = [
+                    race for race in races if getattr(race, '_winner_source', None)
+                ]
+        if visible_winners:
+            winner_matcher = PcsRiderMatcher(selected_namespace) if selected_namespace else None
+            winner_name_index = (
+                _load_stats_editor_rider_name_index(selected_namespace)
+                if selected_namespace else {}
+            )
+            for race in visible_winners:
+                rider_name, rider_path = race._winner_source
+                winner = _stats_editor_winner_link(
+                    rider_name, rider_path, selected_namespace,
+                    winner_matcher, winner_name_index,
+                )
+                race.winner_name = winner['name']
+                race.winner_url = winner['url']
+                race.winner_in_cdb = winner['in_cdb']
 
     if active_method == 'by_list':
         list_entries = _load_namespace_stat_lists(selected_namespace)
@@ -8937,6 +9510,9 @@ def stats_editor():
         can_update_profile=(
             _can_update_stats() and pcs_parcours_type_column_available()
         ),
+        can_update_distance=(
+            _can_update_stats() and pcs_distance_override_column_available()
+        ),
     )
 
 
@@ -8956,28 +9532,35 @@ def stats_editor_profile_options():
         return jsonify(profiles=[])
 
     race_query = PcsRaceCalendar.query
-    race_year_value = (request.args.get('race_year') or 'all').strip().lower()
-    if race_year_value != 'all':
-        race_year = _safe_int(race_year_value)
-        if race_year is not None:
-            race_query = race_query.filter_by(season_year=race_year)
+    year_values = [
+        year for year in _stats_editor_filter_values(request.args.getlist('race_year_values'))
+        if _safe_int(year) is not None
+    ]
+    if year_values:
+        year_condition = PcsRaceCalendar.season_year.in_([int(year) for year in year_values])
+        year_mode = _stats_editor_filter_mode(request.args.get('race_year_mode'))
+        race_query = race_query.filter(~year_condition if year_mode == 'exclude' else year_condition)
+    month_values = [
+        int(month) for month in _stats_editor_filter_values(request.args.getlist('month_values'))
+        if month.isdigit() and 1 <= int(month) <= 12
+    ]
+    if month_values:
+        month_condition = func.extract('month', PcsRaceCalendar.start_date).in_(month_values)
+        if _stats_editor_filter_mode(request.args.get('month_mode')) == 'exclude':
+            month_condition = or_(PcsRaceCalendar.start_date.is_(None), ~month_condition)
+        race_query = race_query.filter(month_condition)
     race_name = (request.args.get('race_name') or '').strip()
     if race_name:
         search_term = _normalize_name_search_term(race_name)
         race_query = race_query.filter(
             _normalized_name_expr(PcsRaceCalendar.name).like(f'%{search_term}%'),
         )
-    classification = (request.args.get('classification') or '').strip()
-    if classification == '-':
-        race_query = race_query.filter(or_(
-            PcsRaceCalendar.classification.is_(None),
-            PcsRaceCalendar.classification == '',
-        ))
-    elif classification:
-        race_query = race_query.filter(PcsRaceCalendar.classification == classification)
-    nation = (request.args.get('nation') or '').strip()
-    if nation:
-        race_query = race_query.filter(PcsRaceCalendar.nation_name == nation)
+    nation_values = _stats_editor_filter_values(request.args.getlist('nation_values'))
+    if nation_values:
+        race_query = _stats_editor_apply_multi_filter(
+            race_query, PcsRaceCalendar.nation_name, nation_values,
+            _stats_editor_filter_mode(request.args.get('nation_mode')), include_nulls=True,
+        )
     for field_name, column, operator in (
         ('start_date_from', PcsRaceCalendar.start_date, '>='),
         ('start_date_to', PcsRaceCalendar.start_date, '<='),
@@ -8991,32 +9574,62 @@ def stats_editor_profile_options():
             race_query = race_query.filter(
                 column >= parsed_date if operator == '>=' else column <= parsed_date,
             )
-    stage_race = (request.args.get('is_stage_race') or '').strip().lower()
-    if stage_race == 'true':
+    race_types = set(_stats_editor_filter_values(request.args.getlist('race_type_values')))
+    race_type_mode = _stats_editor_filter_mode(request.args.get('race_type_mode'))
+    if race_types == {'multiday'} and race_type_mode == 'include' or (
+        race_types == {'one_day'} and race_type_mode == 'exclude'
+    ):
         race_query = race_query.filter(
             PcsRaceCalendar.start_date.isnot(None),
             PcsRaceCalendar.end_date > PcsRaceCalendar.start_date,
         )
-    elif stage_race == 'false':
+    elif race_types == {'one_day'} and race_type_mode == 'include' or (
+        race_types == {'multiday'} and race_type_mode == 'exclude'
+    ):
         race_query = race_query.filter(or_(
             PcsRaceCalendar.start_date.is_(None),
             PcsRaceCalendar.end_date.is_(None),
             PcsRaceCalendar.end_date <= PcsRaceCalendar.start_date,
         ))
 
-    if pcs_parcours_type_column_available():
-        profile_expr = PcsRaceResultPage.parcours_type
-    else:
-        profile_expr = PcsRaceResultPage.payload['parcours_type'].as_string()
     matching_race_ids = race_query.with_entities(PcsRaceCalendar.id).statement
-    profiles = sorted({
-        clean_value
-        for (value,) in db.session.query(profile_expr).filter(
+    if pcs_profile_precedence_columns_available():
+        profile_rows = db.session.query(
+            PcsRaceResultPage.parcours_type,
+            PcsRaceResultPage.firstcycling_profile,
+            PcsRaceResultPage.manual_parcours_type,
+            PcsRaceResultPage.manual_profile_override,
+        ).filter(
             PcsRaceResultPage.pcs_race_id.in_(matching_race_ids),
-            profile_expr.isnot(None),
         ).distinct().all()
-        if (clean_value := _clean_pcs_profile(value))
-    }, key=str.casefold)
+        profile_values = {
+            _pcs_page_profile(SimpleNamespace(
+                parcours_type=parcours_type,
+                firstcycling_profile=firstcycling_profile,
+                manual_parcours_type=manual_parcours_type,
+                manual_profile_override=manual_profile_override,
+            ))
+            for (
+                parcours_type, firstcycling_profile,
+                manual_parcours_type, manual_profile_override,
+            ) in profile_rows
+        }
+        profiles = sorted(
+            {value for value in profile_values if value}, key=str.casefold
+        )
+    else:
+        if pcs_parcours_type_column_available():
+            profile_expr = PcsRaceResultPage.parcours_type
+        else:
+            profile_expr = PcsRaceResultPage.payload['parcours_type'].as_string()
+        profiles = sorted({
+            clean_value
+            for (value,) in db.session.query(profile_expr).filter(
+                PcsRaceResultPage.pcs_race_id.in_(matching_race_ids),
+                profile_expr.isnot(None),
+            ).distinct().all()
+            if (clean_value := _clean_pcs_profile(value))
+        }, key=str.casefold)
     return jsonify(profiles=profiles)
 
 
@@ -10209,10 +10822,11 @@ def release_file_download(release_id, file_id):
 def _parse_pcs_stage_number(value, *, error_code=404):
     if value is None or not str(value).strip():
         return None
-    stage_number = _safe_int(value)
-    if stage_number is None or not 0 <= stage_number <= 99:
+    stage_id = str(value).strip().lower()
+    match = re.fullmatch(r'(0|[1-9]\d?)([a-z]?)', stage_id)
+    if not match or int(match.group(1)) > 99:
         abort(error_code)
-    return stage_number
+    return int(stage_id) if stage_id.isdigit() else stage_id
 
 
 def _pcs_race_classification_label(category_label, start_date, end_date):
@@ -10313,10 +10927,52 @@ def _round_pcs_distance(value):
         return None
 
 
+def _pcs_display_distance(pcs_race_id, stage_key, source_distance, page=None):
+    """Resolve distance using manual override > FC > PCS precedence."""
+    if page is None:
+        page = PcsRaceResultPage.query.filter_by(
+            pcs_race_id=pcs_race_id, stage_key=stage_key,
+        ).first()
+    override = (
+        page.distance_km_override
+        if page and pcs_distance_override_column_available()
+        else None
+    )
+    fc_distance = (
+        page.firstcycling_distance_km
+        if page and pcs_firstcycling_distance_column_available()
+        else None
+    )
+    for candidate in (override, fc_distance, source_distance):
+        normalized = _round_pcs_distance(candidate)
+        if normalized is not None:
+            return normalized
+    return None
+
+
 def _clean_pcs_profile(value):
     """Normalize missing profile values so templates never render literal None."""
     normalized = str(value or '').strip()
     return None if normalized.casefold() in {'', 'none', 'null'} else normalized
+
+
+def _pcs_page_profile(page):
+    if page is None:
+        return None
+    value = (
+        _effective_profile(page)
+        if pcs_profile_precedence_columns_available()
+        else page.parcours_type
+    )
+    return _clean_pcs_profile(value)
+
+
+def _pcs_page_time_trial_type(page):
+    if page is None:
+        return None
+    if pcs_profile_precedence_columns_available():
+        return _effective_time_trial_type(page)
+    return page.time_trial_type if pcs_time_trial_type_column_available() else None
 
 
 def _pcs_table_profile(value):
@@ -10326,6 +10982,7 @@ def _pcs_table_profile(value):
 
 _PCS_EDITABLE_PARCOURS_TYPES = {
     'flat': 'Flat',
+    'cobbles': 'Cobbles',
     'hills, flat finish': 'Hills, flat finish',
     'hills, uphill finish': 'Hills, uphill finish',
     'mountains, flat finish': 'Mountains, flat finish',
@@ -10359,21 +11016,29 @@ def _pcs_race_scope_map_ids(pcs_race, stage_number=None, parsed_overall=None, *,
         elif discover:
             parsed_overall = _fetch_pcs_race_result(pcs_race)
     for stage in (parsed_overall.stages if parsed_overall else []) or []:
-        value = _safe_int(stage.get('stage_number'))
-        if value is not None and not stage.get('is_overall'):
+        raw_value = stage.get('stage_id')
+        if raw_value is None:
+            raw_value = stage.get('stage_number')
+        value = str(raw_value).strip().lower() if raw_value is not None else ''
+        if value and not stage.get('is_overall'):
             stage_numbers.add(value)
     for page in PcsRaceResultPage.query.filter_by(pcs_race_id=pcs_race.id).all():
         if page.stage_key.startswith('stage:'):
-            value = _safe_int(page.stage_key.split(':', 1)[1])
-            if value is not None:
+            value = page.stage_key.split(':', 1)[1].strip().lower()
+            if re.fullmatch(r'(?:0|[1-9]\d?)[a-z]?', value):
                 stage_numbers.add(value)
     if stage_number is not None:
-        stage_numbers.add(stage_number)
+        stage_numbers.add(str(stage_number).strip().lower())
 
     scope_ids = [_pcs_race_result_map(pcs_race).race_result_id]
     scope_ids.extend(
-        _pcs_race_result_map(pcs_race, number).race_result_id
-        for number in sorted(stage_numbers)
+        _pcs_race_result_map(
+            pcs_race, int(stage_id) if stage_id.isdigit() else stage_id,
+        ).race_result_id
+        for stage_id in sorted(
+            stage_numbers,
+            key=lambda value: (int(re.match(r'\d+', value).group()), value),
+        )
     )
     return list(dict.fromkeys(scope_ids))
 
@@ -10515,6 +11180,29 @@ def _age_on_date_from_cdb_birth_value(birth_value, event_date):
 
 def _build_pcs_race_display_rows(pcs_race, namespace, race_result_id, stage_number=None):
     parsed = _fetch_pcs_race_result(pcs_race, stage_number=stage_number)
+    firstcycling_time_records = []
+    if pcs_firstcycling_times_column_available():
+        result_page = PcsRaceResultPage.query.filter_by(
+            pcs_race_id=pcs_race.id,
+            stage_key=_pcs_result_page_key(stage_number),
+        ).options(undefer(PcsRaceResultPage.firstcycling_times)).first()
+        stored_times = result_page.firstcycling_times if result_page else None
+        if isinstance(stored_times, dict):
+            firstcycling_time_records = stored_times.get('records') or []
+    fc_times_by_path = {
+        row.get('pcs_rider_path'): row.get('time')
+        for row in firstcycling_time_records
+        if isinstance(row, dict) and row.get('pcs_rider_path') and row.get('time')
+    }
+    fc_times_by_position = {}
+    for row in firstcycling_time_records:
+        if not isinstance(row, dict) or not row.get('time'):
+            continue
+        try:
+            position = int(row.get('position'))
+        except (TypeError, ValueError):
+            continue
+        fc_times_by_position.setdefault(position, set()).add(str(row['time']))
     event_date = _pcs_result_event_date(pcs_race, parsed, stage_number)
     race_result_ids = _pcs_race_scope_map_ids(
         pcs_race,
@@ -10548,7 +11236,7 @@ def _build_pcs_race_display_rows(pcs_race, namespace, race_result_id, stage_numb
         try:
             with engine.connect() as conn:
                 cyclist_rows = conn.execute(text(f'''
-                    SELECT c.id, c.first_name, c.last_name, c.birth_date,
+                    SELECT c.id, c.first_name, c.last_name, c.first_last_name, c.birth_date,
                            COALESCE(country.flag_name, country.constant, region.constant) AS nationality,
                            {_snapshot_stat_select_list('c')}
                     FROM cdb_cyclist c
@@ -10566,6 +11254,10 @@ def _build_pcs_race_display_rows(pcs_race, namespace, race_result_id, stage_numb
                 continue
             item['first_name'] = cyclist['first_name'] or ''
             item['last_name'] = cyclist['last_name'] or ''
+            item['export_rider_name'] = _cdb_rider_reordered_display_name(
+                cyclist['first_last_name'], cyclist['last_name'],
+                item.get('rider_name'),
+            )
             item['nationality'] = cyclist['nationality']
             db_age = _age_on_date_from_cdb_birth_value(cyclist['birth_date'], event_date)
             item['age'] = db_age if db_age is not None else item['result'].age
@@ -10589,6 +11281,12 @@ def _build_pcs_race_display_rows(pcs_race, namespace, race_result_id, stage_numb
         if item['cyclist_id'] is None:
             item['first_name'], item['last_name'] = split_pcs_rider_name(result.rider_name)
         linked_cyclist_id = item['cyclist_id']
+        firstcycling_time = fc_times_by_path.get(result.pcs_rider_path)
+        if firstcycling_time is None and result.position is not None:
+            position_times = fc_times_by_position.get(result.position, set())
+            if len(position_times) == 1:
+                firstcycling_time = next(iter(position_times))
+        display_time = result.time or firstcycling_time or result.position_status
         item.update({
             'source_rider_id': item['cyclist_id'],
             'first_name': item.get('first_name') or item.get('rider_name') or result.rider_name,
@@ -10596,6 +11294,7 @@ def _build_pcs_race_display_rows(pcs_race, namespace, race_result_id, stage_numb
             'position': result.position,
             'position_display': result.position_status or (result.position if result.position is not None else '-'),
             'rider_name': item.get('rider_name') or result.rider_name,
+            'export_rider_name': item.get('export_rider_name') or '',
             'rider_url': (
                 url_for(
                     'web.rider_detail', rider_id=linked_cyclist_id,
@@ -10611,7 +11310,7 @@ def _build_pcs_race_display_rows(pcs_race, namespace, race_result_id, stage_numb
             'nationality_flag_code': nationality_flag_code(item.get('nationality') or result.nationality),
             'age': item.get('age', result.age),
             'time': _format_race_result_time(
-                result.time or result.position_status,
+                display_time,
                 as_time_gap=result.position not in (None, 1),
             ),
             'potential': item.get('potential'),
@@ -10642,6 +11341,18 @@ def stats_editor_pcs_race_detail(pcs_race_id):
     cached_page = PcsRaceResultPage.query.filter_by(
         pcs_race_id=pcs_race.id,
         stage_key=_pcs_result_page_key(stage_number),
+    )
+    precedence_available = pcs_profile_precedence_columns_available()
+    if precedence_available:
+        cached_page = cached_page.options(
+            undefer(PcsRaceResultPage.firstcycling_profile),
+            undefer(PcsRaceResultPage.manual_parcours_type),
+            undefer(PcsRaceResultPage.manual_profile_override),
+            undefer(PcsRaceResultPage.manual_time_trial_type_override),
+        )
+    cached_page = cached_page.options(
+        undefer(PcsRaceResultPage.parcours_type),
+        undefer(PcsRaceResultPage.time_trial_type),
     ).first()
     cached_result = (
         _deserialize_pcs_result_page(cached_page.payload)
@@ -10661,14 +11372,14 @@ def stats_editor_pcs_race_detail(pcs_race_id):
     profile_value = None
     if cached_page and (stage_number is not None or not is_multi_day_race):
         if route_profile_schema_available:
-            profile_value = _clean_pcs_profile(cached_page.parcours_type)
+            profile_value = _pcs_page_profile(cached_page)
         if not profile_value:
             profile_value = _clean_pcs_profile(
                 cached_result.parcours_type if cached_result else None
             )
     detail_time_trial_type = None
     if time_trial_schema_available and cached_page:
-        detail_time_trial_type = cached_page.time_trial_type
+        detail_time_trial_type = _pcs_page_time_trial_type(cached_page)
     elif cached_result:
         detail_time_trial_type = pcs_time_trial_type(cached_result.stage_type)
     race_result_ids = _pcs_race_scope_map_ids(pcs_race, stage_number)
@@ -10693,7 +11404,9 @@ def stats_editor_pcs_race_detail(pcs_race_id):
             ('Profile', profile_value, 'race-profile'),
             (
                 'Distance (km)',
-                _round_pcs_distance(cached_result.distance_km) if cached_result and not is_multi_day_race else None,
+                _pcs_display_distance(
+                    pcs_race.id, _pcs_result_page_key(stage_number), cached_result.distance_km,
+                ) if cached_result and (stage_number is not None or not is_multi_day_race) else None,
                 'race-distance',
             ),
             ('Start date', pcs_race.start_date, 'race-start-date'),
@@ -10715,11 +11428,19 @@ def stats_editor_pcs_race_detail(pcs_race_id):
         race_details_profile_url=url_for('web.stats_editor_cycle_pcs_profile', pcs_race_id=pcs_race.id),
         race_details_profile_stage_key=profile_stage_key,
         race_details_time_trial_type=detail_time_trial_type,
+        race_details_manual_tt_override=(
+            getattr(cached_page, 'manual_time_trial_type_override', None)
+            if precedence_available and cached_page else None
+        ),
         race_details_can_toggle_itt=(
             _can_update_stats() and time_trial_schema_available and cached_page is not None
             and not (stage_number is None and is_multi_day_race)
         ),
         race_details_itt_url=url_for('web.stats_editor_toggle_pcs_itt', pcs_race_id=pcs_race.id),
+        race_details_can_edit_distance=(
+            _can_update_stats() and pcs_distance_override_column_available()
+        ),
+        race_details_distance_url=url_for('web.stats_editor_save_pcs_distance', pcs_race_id=pcs_race.id),
         result_rows=[], stage_rows=[], selected_stage=None,
         time_separators_allowed=bool(
             stage_number is not None or not (
@@ -10744,6 +11465,10 @@ def stats_editor_pcs_race_detail(pcs_race_id):
         scope_delta_status=status, stat_conflicts=conflicts,
         pcs_results_loading=True, pcs_results_error=None,
         can_update_stats=_can_update_stats(), can_download_stats=_can_download_stats(),
+        can_edit_distance=(
+            _can_update_stats() and pcs_distance_override_column_available()
+        ),
+        distance_url=url_for('web.stats_editor_save_pcs_distance', pcs_race_id=pcs_race.id),
         can_approve_stats=_can_approve_stats(),
         is_submitted_for_approval=_race_submission_matches(
             namespace, pcs_race_id, _pcs_pending_fingerprint(namespace, race_result_ids),
@@ -10784,8 +11509,11 @@ def stats_editor_pcs_race_stages(pcs_race_id):
         stages = []
         for stage in stage_links:
             stage_number = stage.get('stage_number')
+            stage_id = stage.get('stage_id') or stage_number
             stage_data = {
                 'stage_number': stage_number,
+                'stage_id': stage_id,
+                'stage_key': f'stage:{stage_id}',
                 'name': stage.get('name') or f'Stage {stage_number}',
                 'profile_display': None,
                 'time_trial_type': None,
@@ -10799,7 +11527,7 @@ def stats_editor_pcs_race_stages(pcs_race_id):
                 ),
             }
             try:
-                stage_page = _fetch_pcs_race_result(pcs_race, stage_number)
+                stage_page = _fetch_pcs_race_result(pcs_race, stage_id)
             except Exception:
                 logger.exception(
                     'Could not load PCS stage metadata for calendar entry %s stage %s',
@@ -10822,18 +11550,45 @@ def stats_editor_pcs_race_stages(pcs_race_id):
                         'winner_in_cdb': winner['in_cdb'],
                     })
                 stage_data.update({
-                    'profile_display': _clean_pcs_profile(stage_page.parcours_type),
+                    'profile_display': _pcs_page_profile(stage_page),
                     'time_trial_type': (
                         stage_page.time_trial_type
                         if pcs_time_trial_type_column_available()
                         else (pcs_time_trial_type(stage.get('name')) or format_pcs_stage_profile(stage_page))
                     ),
-                    'parcours_type': _clean_pcs_profile(stage_page.parcours_type),
+                    'manual_time_trial_type_override': getattr(
+                        stage_page, 'manual_time_trial_type_override', None
+                    ),
+                    'parcours_type': _pcs_page_profile(stage_page),
                     'is_cached': True,
-                    'distance_km': _round_pcs_distance(stage_page.distance_km),
+                    'distance_km': _pcs_display_distance(
+                        pcs_race.id, f'stage:{stage_id}', stage_page.distance_km,
+                    ),
                     'stage_date': stage_page.stage_date,
                 })
             stages.append(stage_data)
+        selected_profile_values = _stats_editor_filter_values(
+            request.args.getlist('profile_values')
+        )
+        profile_mode = _stats_editor_filter_mode(request.args.get('profile_mode'))
+        if selected_profile_values:
+            stages = [
+                stage for stage in stages
+                if _stats_editor_value_matches(
+                    stage.get('parcours_type') or '-',
+                    selected_profile_values,
+                    profile_mode,
+                )
+            ]
+        min_distance = request.args.get('distance_min', type=float)
+        max_distance = request.args.get('distance_max', type=float)
+        if min_distance is not None or max_distance is not None:
+            stages = [
+                stage for stage in stages
+                if stage.get('distance_km') is not None
+                and (min_distance is None or stage['distance_km'] >= min_distance)
+                and (max_distance is None or stage['distance_km'] <= max_distance)
+            ]
         _pcs_race_scope_map_ids(pcs_race, parsed_overall=parsed_result)
         db.session.commit()
         cached_stage_numbers = set()
@@ -10841,7 +11596,7 @@ def stats_editor_pcs_race_stages(pcs_race_id):
             if not page.stage_key.startswith('stage:'):
                 continue
             try:
-                cached_stage_numbers.add(int(page.stage_key.split(':', 1)[1]))
+                cached_stage_numbers.add(page.stage_key.split(':', 1)[1].lower())
             except (TypeError, ValueError):
                 continue
         delta_status = _load_namespace_provider_delta_status(
@@ -10850,11 +11605,11 @@ def stats_editor_pcs_race_stages(pcs_race_id):
         for stage in stages:
             stage_number = stage['stage_number']
             changes = delta_status.get(
-                (str(pcs_race.id), str(stage_number)),
+                (str(pcs_race.id), str(stage.get('stage_id') or stage_number)),
                 {'total_changes': 0, 'approved_changes': 0},
             )
             has_changes = changes['total_changes'] > 0
-            stage['is_result_downloaded'] = stage_number in cached_stage_numbers
+            stage['is_result_downloaded'] = str(stage.get('stage_id') or stage_number).lower() in cached_stage_numbers
             stage['has_stat_changes'] = has_changes
             stage['is_approved'] = has_changes and changes['approved_changes'] == changes['total_changes']
             stage['has_namespace'] = namespace is not None
@@ -10871,10 +11626,13 @@ def stats_editor_toggle_pcs_itt(pcs_race_id):
     if not _can_access_panel('stat_editor') or not _can_update_stats():
         abort(403)
     stage_key = (request.form.get('stage_key', type=str) or '').strip()
-    if stage_key != 'overall' and not re.fullmatch(r'stage:(?:0|[1-9]\d*)', stage_key):
+    if stage_key != 'overall' and not re.fullmatch(r'stage:(?:0|[1-9]\d?)[a-z]?', stage_key):
         return jsonify(error='Invalid stage key.'), 400
+    requested_override = (request.form.get('override', type=str) or '').strip().upper()
     requested = (request.form.get('is_itt', type=str) or '').strip().lower()
-    if requested not in {'true', 'false'}:
+    if requested_override and requested_override not in {'AUTO', 'ITT', 'TTT', 'NONE'}:
+        return jsonify(error='Invalid time-trial override.'), 400
+    if not requested_override and requested not in {'true', 'false'}:
         return jsonify(error='Invalid ITT value.'), 400
     if not pcs_time_trial_type_column_available():
         return jsonify(error='PCS time-trial schema is unavailable.'), 503
@@ -10882,15 +11640,74 @@ def stats_editor_toggle_pcs_itt(pcs_race_id):
         pcs_race = PcsRaceCalendar.query.get_or_404(pcs_race_id)
         if pcs_race.start_date and pcs_race.end_date and pcs_race.end_date > pcs_race.start_date:
             return jsonify(error='A multi-day race overall page cannot be marked as an individual time trial.'), 409
-    page = PcsRaceResultPage.query.filter_by(
+    page_query = PcsRaceResultPage.query.filter_by(
         pcs_race_id=pcs_race_id,
         stage_key=stage_key,
-    ).first()
+    )
+    if pcs_profile_precedence_columns_available():
+        page_query = page_query.options(
+            undefer(PcsRaceResultPage.manual_time_trial_type_override),
+            undefer(PcsRaceResultPage.firstcycling_profile),
+        )
+    page = page_query.first()
     if page is None:
         return jsonify(error='Cached PCS result page not found.'), 404
-    page.time_trial_type = 'ITT' if requested == 'true' else None
+    if pcs_profile_precedence_columns_available():
+        value = requested_override or ('ITT' if requested == 'true' else 'NONE')
+        page.manual_time_trial_type_override = None if value == 'AUTO' else value
+        effective_value = _effective_time_trial_type(page)
+    else:
+        page.time_trial_type = 'ITT' if requested == 'true' else None
+        effective_value = page.time_trial_type
     db.session.commit()
-    return jsonify(ok=True, time_trial_type=page.time_trial_type)
+    return jsonify(
+        ok=True,
+        time_trial_type=effective_value,
+        manual_override=(
+            page.manual_time_trial_type_override
+            if pcs_profile_precedence_columns_available() else None
+        ),
+    )
+
+
+@web_bp.route('/stats-editor/races/pcs/<int:pcs_race_id>/distance', methods=['POST'])
+@login_required
+def stats_editor_save_pcs_distance(pcs_race_id):
+    if not _can_access_panel('stat_editor') or not _can_update_stats():
+        abort(403)
+    if not pcs_distance_override_column_available():
+        return jsonify(error='PCS distance override schema is unavailable.'), 503
+    stage_key = (request.form.get('stage_key', type=str) or 'overall').strip()
+    if stage_key != 'overall' and not re.fullmatch(r'stage:(?:0|[1-9]\d?)[a-z]?', stage_key):
+        return jsonify(error='Invalid stage key.'), 400
+    raw_value = (request.form.get('distance_km', type=str) or '').strip().replace(',', '.')
+    try:
+        value = float(raw_value)
+    except ValueError:
+        return jsonify(error='Enter a valid distance.'), 400
+    if not (0 <= value <= 999999.9) or round(value, 1) != value:
+        return jsonify(error='Distance must be non-negative with at most one decimal.'), 400
+    pcs_race = PcsRaceCalendar.query.get_or_404(pcs_race_id)
+    page = PcsRaceResultPage.query.filter_by(
+        pcs_race_id=pcs_race_id, stage_key=stage_key,
+    ).options(undefer(PcsRaceResultPage.distance_km_override)).first()
+    if page is None:
+        stage_number = stage_key.split(':', 1)[1] if stage_key.startswith('stage:') else None
+        if stage_number is not None and stage_number.isdigit():
+            stage_number = int(stage_number)
+        try:
+            _fetch_pcs_race_result(pcs_race, stage_number)
+        except Exception as exc:
+            logger.exception('Could not fetch PCS result before saving distance')
+            return jsonify(error=pcs_result_fetch_error_message(exc)), 502
+        page = PcsRaceResultPage.query.filter_by(
+            pcs_race_id=pcs_race_id, stage_key=stage_key,
+        ).options(undefer(PcsRaceResultPage.distance_km_override)).first()
+    if page is None:
+        return jsonify(error='PCS did not return a result page for this scope.'), 502
+    page.distance_km_override = value
+    db.session.commit()
+    return jsonify(ok=True, distance_km=f'{value:.1f}', stage_key=stage_key)
 
 
 @web_bp.route('/stats-editor/races/pcs/<int:pcs_race_id>/profile', methods=['POST'])
@@ -10903,9 +11720,11 @@ def stats_editor_cycle_pcs_profile(pcs_race_id):
         return jsonify(error='PCS route-profile schema is unavailable.'), 503
 
     stage_key = (request.form.get('stage_key', type=str) or 'overall').strip()
-    if stage_key != 'overall' and not re.fullmatch(r'stage:(?:0|[1-9]\d*)', stage_key):
+    if stage_key != 'overall' and not re.fullmatch(r'stage:(?:0|[1-9]\d?)[a-z]?', stage_key):
         return jsonify(error='Invalid stage key.'), 400
-    stage_number = int(stage_key.split(':', 1)[1]) if stage_key.startswith('stage:') else None
+    stage_number = stage_key.split(':', 1)[1] if stage_key.startswith('stage:') else None
+    if stage_number is not None and stage_number.isdigit():
+        stage_number = int(stage_number)
     requested = (request.form.get('parcours_type', type=str) or '').strip()
     normalized = requested.casefold()
     if requested and normalized not in _PCS_EDITABLE_PARCOURS_TYPES:
@@ -10913,9 +11732,16 @@ def stats_editor_cycle_pcs_profile(pcs_race_id):
     parcours_type = _PCS_EDITABLE_PARCOURS_TYPES.get(normalized)
 
     pcs_race = PcsRaceCalendar.query.get_or_404(pcs_race_id)
-    page = PcsRaceResultPage.query.filter_by(
+    page_query = PcsRaceResultPage.query.filter_by(
         pcs_race_id=pcs_race_id, stage_key=stage_key,
-    ).options(undefer(PcsRaceResultPage.parcours_type)).first()
+    ).options(undefer(PcsRaceResultPage.parcours_type))
+    precedence_available = pcs_profile_precedence_columns_available()
+    if precedence_available:
+        page_query = page_query.options(
+            undefer(PcsRaceResultPage.manual_parcours_type),
+            undefer(PcsRaceResultPage.manual_profile_override),
+        )
+    page = page_query.first()
     if page is None:
         try:
             _fetch_pcs_race_result(pcs_race, stage_number)
@@ -10925,15 +11751,25 @@ def stats_editor_cycle_pcs_profile(pcs_race_id):
                 pcs_race_id, stage_key,
             )
             return jsonify(error=pcs_result_fetch_error_message(exc)), 502
-        page = PcsRaceResultPage.query.filter_by(
+        page_query = PcsRaceResultPage.query.filter_by(
             pcs_race_id=pcs_race_id, stage_key=stage_key,
-        ).options(undefer(PcsRaceResultPage.parcours_type)).first()
+        ).options(undefer(PcsRaceResultPage.parcours_type))
+        if precedence_available:
+            page_query = page_query.options(
+                undefer(PcsRaceResultPage.manual_parcours_type),
+                undefer(PcsRaceResultPage.manual_profile_override),
+            )
+        page = page_query.first()
         if page is None:
             return jsonify(error='PCS did not return a result page for this race scope.'), 502
-    page.parcours_type = parcours_type
-    page.payload = {**(page.payload or {}), '_parcours_type_manual': True}
+    if precedence_available:
+        page.manual_parcours_type = parcours_type
+        page.manual_profile_override = bool(requested)
+    else:
+        page.parcours_type = parcours_type
+        page.payload = {**(page.payload or {}), '_parcours_type_manual': True}
     db.session.commit()
-    return jsonify(ok=True, parcours_type=page.parcours_type)
+    return jsonify(ok=True, parcours_type=_pcs_page_profile(page))
 
 
 @web_bp.route('/stats-editor/races/pcs/<int:pcs_race_id>/results')
@@ -10973,6 +11809,18 @@ def stats_editor_pcs_race_results(pcs_race_id):
             result_rows, _, _, parsed_result = _build_pcs_race_display_rows(
                 pcs_race, namespace, result_map.race_result_id, stage_number,
             )
+        stage_listing_result = parsed_result
+        if stage_number is not None:
+            # PCS stage pages can omit earlier entries from their selector
+            # (for example, the prologue disappears from Stage 1). Build the
+            # selector from the race's overall page, which has the full list.
+            try:
+                stage_listing_result = _fetch_pcs_race_result(pcs_race)
+            except Exception:
+                logger.exception(
+                    'Could not load the complete stage list for PCS race %s',
+                    pcs_race_id,
+                )
         race_metadata = {
             'classification': _pcs_race_classification_label(
                 pcs_race.category_label, pcs_race.start_date, pcs_race.end_date,
@@ -10981,7 +11829,9 @@ def stats_editor_pcs_race_results(pcs_race_id):
             'profile_display': (
                 None if is_multi_day else _clean_pcs_profile(parsed_result.parcours_type)
             ),
-            'distance_km': _round_pcs_distance(parsed_result.distance_km),
+            'distance_km': _pcs_display_distance(
+                pcs_race.id, _pcs_result_page_key(stage_number), parsed_result.distance_km,
+            ),
             'start_location': parsed_result.start_location,
             'end_location': parsed_result.end_location,
             'stage_date': _pcs_date_iso_display(parsed_result.stage_date),
@@ -10990,7 +11840,7 @@ def stats_editor_pcs_race_results(pcs_race_id):
             'parcours_type': parsed_result.parcours_type,
         }
         enriched_stages = []
-        for stage in parsed_result.stages or []:
+        for stage in stage_listing_result.stages or []:
             stage_details = dict(stage)
             if stage.get('is_overall'):
                 if stage_number is None:
@@ -11001,11 +11851,12 @@ def stats_editor_pcs_race_results(pcs_race_id):
                     except Exception:
                         stage_page = None
             else:
-                if stage_number == stage.get('stage_number'):
+                stage_id = stage.get('stage_id') or stage.get('stage_number')
+                if str(stage_number) == str(stage_id):
                     stage_page = parsed_result
                 else:
                     try:
-                        stage_page = _fetch_pcs_race_result(pcs_race, stage.get('stage_number'))
+                        stage_page = _fetch_pcs_race_result(pcs_race, stage_id)
                     except Exception:
                         stage_page = None
             if stage_page:
@@ -11032,7 +11883,11 @@ def stats_editor_pcs_race_results(pcs_race_id):
                     ),
                     'parcours_type': _clean_pcs_profile(stage_page.parcours_type),
                     'profile_display': _clean_pcs_profile(stage_page.parcours_type),
-                    'distance_km': _round_pcs_distance(stage_page.distance_km),
+                    'distance_km': _pcs_display_distance(
+                        pcs_race.id,
+                        'overall' if stage.get('is_overall') else f"stage:{stage.get('stage_id') or stage.get('stage_number')}",
+                        stage_page.distance_km,
+                    ),
                     'start_location': stage_page.start_location,
                     'end_location': stage_page.end_location,
                 })
@@ -11057,6 +11912,10 @@ def stats_editor_pcs_race_results(pcs_race_id):
         ),
         stat_fields=STAT_DELTA_FIELDS,
         can_update_stats=_can_update_stats(),
+        can_edit_distance=(
+            _can_update_stats() and pcs_distance_override_column_available()
+        ),
+        distance_url=url_for('web.stats_editor_save_pcs_distance', pcs_race_id=pcs_race.id),
         pcs_result_metadata=race_metadata,
         change_export_text=_race_stat_changes_export(
             pcs_race.name, pcs_race.nation_name, result_rows,

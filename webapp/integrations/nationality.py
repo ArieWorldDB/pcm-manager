@@ -107,6 +107,10 @@ _COUNTRIES = {
     'bn': ('Brunei', 'BRU'), 'kp': ('North Korea', 'PRK'),
     'la': ('Laos', 'LAO'), 'mo': ('Macao', 'MAC'),
     'mm': ('Myanmar', 'MYA'), 'ps': ('Palestine', 'PLE'),
+    'li': ('Liechtenstein', 'LIE'), 'ls': ('Lesotho', 'LES'),
+    'mc': ('Monaco', 'MON'),
+    'ai': ('Anguilla', 'AIA'), 'fm': ('Micronesia', 'FSM'),
+    'sc': ('Seychelles', 'SEY'),
 }
 
 _ALIASES = {

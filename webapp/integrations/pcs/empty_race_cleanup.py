@@ -1,12 +1,12 @@
 """Conservatively remove old PCS races whose complete result set is empty."""
 import logging
 import re
-import time
 from datetime import date
 
 from sqlalchemy import bindparam, create_engine, inspect, text
 
 from webapp.extensions import db
+from webapp.integrations.pcs import http as pcs_http
 from webapp.integrations.pcs.result_pages import _fetch_pcs_race_result
 from webapp.models.main.pcs import PcsRaceCalendar, PcsRaceResultPage
 from webapp.models.main.namespace import Namespace
@@ -27,11 +27,14 @@ def _stage_numbers(parsed):
     for stage in parsed.stages or []:
         if stage.get('is_overall'):
             continue
-        value = stage.get('stage_number')
-        if isinstance(value, bool) or not re.fullmatch(r'\d{1,2}', str(value or '')):
+        value = stage.get('stage_id')
+        if value is None:
+            value = stage.get('stage_number')
+        value_text = str(value).strip().lower() if value is not None else ''
+        if isinstance(value, bool) or not re.fullmatch(r'(?:0|[1-9]\d?)[a-z]?', value_text):
             raise ValueError('PCS returned an unrecognized stage list')
-        numbers.add(int(value))
-    return sorted(numbers)
+        numbers.add(value_text)
+    return sorted(numbers, key=lambda value: (int(re.match(r'\d+', value).group()), value))
 
 
 def _pcs_result_ids_in_use(result_ids):
@@ -99,7 +102,7 @@ def _has_cached_results(race_id):
     return False
 
 
-def _verify_entire_race_empty(race, *, request_delay_seconds=2):
+def _verify_entire_race_empty(race, *, request_delay_seconds=None):
     """Force-refresh every PCS result scope; any ambiguity keeps the race."""
     overall = _fetch_pcs_race_result(race, force_refresh=True)
     if overall.rows:
@@ -113,18 +116,18 @@ def _verify_entire_race_empty(race, *, request_delay_seconds=2):
         return False, 'multi_day_stage_list_missing'
 
     for stage_number in stages:
-        if request_delay_seconds:
-            time.sleep(request_delay_seconds)
+        stage_request = int(stage_number) if stage_number.isdigit() else stage_number
         stage_result = _fetch_pcs_race_result(
-            race, stage_number=stage_number, force_refresh=True,
+            race, stage_number=stage_request, force_refresh=True,
         )
         if stage_result.rows:
             return False, f'stage_{stage_number}_results_found'
     return True, 'all_pcs_scopes_confirmed_empty'
 
 
-def run_empty_race_cleanup(*, today=None, request_delay_seconds=2, limit=None):
+def run_empty_race_cleanup(*, today=None, request_delay_seconds=None, limit=None):
     """Verify and remove old, wholly empty races; an optional limit allows batching."""
+    pcs_http.ensure_pcs_fetch_allowed()
     if limit is not None and limit < 1:
         raise ValueError('limit must be a positive integer')
     today = today or date.today()
@@ -244,7 +247,4 @@ def run_empty_race_cleanup(*, today=None, request_delay_seconds=2, limit=None):
             db.session.rollback()
             summary['errors'].append({'id': race_id, 'error': str(exc)[:240]})
             logger.warning('Could not verify PCS race %s (%s): %s', race_id, race_name, exc)
-        finally:
-            if request_delay_seconds and index < len(actionable) - 1:
-                time.sleep(request_delay_seconds)
     return summary

@@ -46,12 +46,14 @@ class PcsRaceResultParse:
     nation_name: str | None = None
     stages: list[dict] | None = None
     stage_number: int | None = None
+    stage_id: str | None = None
     distance_km: float | None = None
     start_location: str | None = None
     end_location: str | None = None
     stage_date: str | None = None
     stage_type: str | None = None
     parcours_type: str | None = None
+    team_results: list[dict] | None = None
 
 
 @dataclass
@@ -102,6 +104,28 @@ def _pcs_rider_slug(value):
     raw_value = _clean_text(value)
     if raw_value and re.fullmatch(r'[a-z0-9_.-]+', raw_value, re.IGNORECASE):
         return raw_value.casefold()
+
+    # Most saved values are already canonical rider URLs. Avoid urljoin and
+    # urlparse for these common paths; this helper runs for every stored link
+    # when building the exact-match index.
+    fast_path = (raw_value or '').split('#', 1)[0].split('?', 1)[0]
+    if '://' in fast_path:
+        fast_path = fast_path.split('://', 1)[1]
+        path_start = fast_path.find('/')
+        fast_path = fast_path[path_start:] if path_start >= 0 else ''
+    elif fast_path.startswith('//'):
+        path_start = fast_path.find('/', 2)
+        fast_path = fast_path[path_start:] if path_start >= 0 else ''
+    elif not fast_path.startswith('/'):
+        fast_path = '/' + fast_path
+    fast_path = fast_path.rstrip('/').casefold()
+    fast_parts = [part for part in fast_path.split('/') if part]
+    if (
+        len(fast_parts) in (2, 3)
+        and fast_parts[0] == 'rider'
+        and (len(fast_parts) == 2 or fast_parts[2] == 'road')
+    ):
+        return fast_parts[1]
 
     normalized_path = _normalize_pcs_rider_path(value)
     if not normalized_path:
@@ -258,13 +282,14 @@ def _extract_stage_metadata(soup):
     metadata = {}
     subtitle = soup.select_one('.titleCont .title-line2')
     subtitle_text = (_clean_text(subtitle.get_text(' ', strip=True)) or '') if subtitle else ''
-    stage_match = re.search(r'\bStage\s+(\d+)\b', subtitle_text, re.I)
+    stage_match = re.search(r'\bStage\s+(\d+)([a-z]?)\b', subtitle_text, re.I)
     if stage_match:
         metadata['stage_number'] = int(stage_match.group(1))
+        metadata['stage_id'] = f'{stage_match.group(1)}{stage_match.group(2).lower()}'
     distance_match = re.search(r'\((\d+(?:[.,]\d+)?)\s*km\)', subtitle_text, re.I)
     if distance_match:
         metadata['distance_km'] = round(float(distance_match.group(1).replace(',', '.')), 1)
-    locations = re.search(r'\bStage\s+\d+\s*[»>]\s*(.*?)\s*[›>]\s*(.*?)\s*(?:\(\d+(?:[.,]\d+)?\s*km\))?$', subtitle_text, re.I)
+    locations = re.search(r'\bStage\s+\d+[a-z]?\s*[»>]\s*(.*?)\s*[›>]\s*(.*?)\s*(?:\(\d+(?:[.,]\d+)?\s*km\))?$', subtitle_text, re.I)
     if locations:
         metadata['start_location'] = _clean_text(locations.group(1))
         metadata['end_location'] = _clean_text(locations.group(2))
@@ -295,6 +320,43 @@ def _extract_stage_metadata(soup):
         if date_node:
             metadata['stage_date'] = _clean_text(date_node.get('datetime') or date_node.get('data-date') or date_node.get_text(' ', strip=True))
     return metadata
+
+
+def _parse_ttt_team_results(soup):
+    """Read PCS team time trial classifications without inventing rider places."""
+    result_list = soup.select_one('.resultCont .ttt-results')
+    if result_list is None:
+        return []
+    teams = []
+    for item in result_list.find_all('li', recursive=False):
+        team_link = item.select_one('a[href^="team/"]')
+        if team_link is None:
+            continue
+        position_cell = item.select_one('div.w10.fs14')
+        time_cell = item.select_one('.timeSpeed .time')
+        time_values = item.select('.timeSpeed > div')
+        rider_rows = []
+        for row in item.select('table tr'):
+            rider_link = row.select_one('a[href^="rider/"]')
+            if rider_link is None:
+                continue
+            cells = row.find_all('td', recursive=False)
+            rider_rows.append({
+                'rider_name': _clean_text(rider_link.get_text(' ', strip=True)),
+                'pcs_rider_path': '/' + rider_link.get('href', '').lstrip('/'),
+                'pcs_points': _parse_int(_clean_text(cells[1].get_text(' ', strip=True))) if len(cells) > 1 else None,
+                'uci_points': _parse_int(_clean_text(cells[2].get_text(' ', strip=True))) if len(cells) > 2 else None,
+            })
+        teams.append({
+            'position': _parse_int(_clean_text(position_cell.get_text(' ', strip=True))) if position_cell else None,
+            'team_name': _clean_text(team_link.get_text(' ', strip=True)),
+            'pcs_team_path': '/' + team_link.get('href', '').lstrip('/'),
+            'time': _clean_text(time_cell.get_text(' ', strip=True)) if time_cell else None,
+            'time_gap': _clean_text(time_values[1].get_text(' ', strip=True)) if len(time_values) > 1 else None,
+            'speed_kmh': _clean_text(time_values[2].get_text(' ', strip=True)) if len(time_values) > 2 else None,
+            'riders': rider_rows,
+        })
+    return teams
 
 
 def format_pcs_stage_profile(stage_page):
@@ -444,7 +506,7 @@ def parse_pcs_race_results_html(html, source_url=None):
     source_race_match = re.search(r'/race/([^/]+)', source_path)
     source_race_slug = source_race_match.group(1) if source_race_match else None
     if source_race_slug:
-        source_race_slug = re.sub(r'-(?:stage-\d+|gc|result)$', '', source_race_slug)
+        source_race_slug = re.sub(r'-(?:stage-\d+[a-z]?|prologue|gc|result)$', '', source_race_slug)
 
     def normalized_slug(value):
         value = unicodedata.normalize('NFKD', unquote(value or ''))
@@ -454,23 +516,50 @@ def parse_pcs_race_results_html(html, source_url=None):
 
     def add_stage_link(href, label):
         nonlocal overall_link
-        match = re.search(r'(?:^|/)race/([^/?#]+)-stage-(\d+)$', href, re.I)
+        match = re.search(r'(?:^|/)race/([^/?#]+)-prologue$', href, re.I)
         if match:
             if source_race_slug and normalized_slug(match.group(1)) != source_race_slug:
                 return
-            stage_number = int(match.group(2))
+            stage_links['0'] = {
+                'stage_number': 0,
+                'name': 'Prologue',
+                'path': f'/race/{match.group(1)}-prologue',
+            }
+            return
+        match = re.search(r'(?:^|/)race/([^/?#]+)-stage-(\d+[a-z]?)$', href, re.I)
+        if match:
+            if source_race_slug and normalized_slug(match.group(1)) != source_race_slug:
+                return
+            route_stage_id = match.group(2).lower()
+            route_stage_number = int(re.match(r'\d+', route_stage_id).group())
+            label_stage = re.match(r'^Stage\s+(\d+)([a-z]?)\b', label, re.I)
+            if label_stage:
+                stage_id = f'{label_stage.group(1)}{label_stage.group(2).lower()}'
+                stage_number = int(label_stage.group(1))
+            elif re.fullmatch(r'prologue', label, re.I):
+                stage_id = '0'
+                stage_number = 0
+            else:
+                stage_id = route_stage_id
+                stage_number = route_stage_number
             # PCS can label the first stage's selector option with only the
             # edition year (for example, "2026"). That's not a stage name.
             stage_name = (
-                f'Stage {stage_number}'
+                'Prologue' if stage_number == 0
+                else f'Stage {stage_number}'
                 if not label or re.fullmatch(r'\d{4}', label)
                 else label
             )
-            stage_links[stage_number] = {
+            stage_data = {
                 'stage_number': stage_number,
                 'name': stage_name,
-                'path': f'/race/{match.group(1)}-stage-{stage_number}',
+                # The route suffix is not always the displayed stage ID. Keep
+                # PCS's exact selector URL (e.g. route stage-1 can be Stage 1a).
+                'path': f'/race/{match.group(1)}-stage-{route_stage_id}',
             }
+            if stage_id != str(stage_number):
+                stage_data['stage_id'] = stage_id
+            stage_links[stage_id] = stage_data
             return
         match = re.search(r'(?:^|/)race/([^/?#]+)-gc$', href, re.I)
         if match:
@@ -492,20 +581,170 @@ def parse_pcs_race_results_html(html, source_url=None):
         add_stage_link(href, label)
     # Only the race stage selector contains the complete stage list. Other
     # links include previous/next shortcuts and links to editions such as 2025.
-    source_stage_match = re.search(r'-stage-(\d+)(?:/|$)', source_path)
-    is_stage_page = source_stage_match is not None
+    source_stage_match = re.search(r'-stage-(\d+[a-z]?)(?:/|$)', source_path)
+    source_prologue_match = re.search(r'-prologue(?:/|$)', source_path)
+    route_is_prologue = bool(
+        source_prologue_match
+        or (source_stage_match and int(re.match(r'\d+', source_stage_match.group(1)).group()) == 0)
+    )
+    source_stage_number = (
+        re.match(r'\d+', source_stage_match.group(1)).group()
+        if source_stage_match else None
+    )
+    is_stage_page = source_stage_match is not None or source_prologue_match is not None
     table = None
+    source_path = unquote(source_path).rstrip('/').casefold()
+    selected_stage = next((
+        stage for stage in stage_links.values()
+        if unquote(stage.get('path') or '').rstrip('/').casefold() == source_path
+    ), None)
+    if selected_stage is None and source_stage_match:
+        selected_stage = stage_links.get(source_stage_match.group(1).lower())
+    selected_stage_id = (
+        str(selected_stage.get('stage_id') or selected_stage.get('stage_number'))
+        if selected_stage else None
+    )
+    source_is_prologue = route_is_prologue or bool(
+        selected_stage and (
+            selected_stage_id == '0'
+            or (selected_stage.get('name') or '').strip().casefold() == 'prologue'
+        )
+    )
+    selected_stage_heading = None
+    if selected_stage:
+        selected_stage_heading = re.match(
+            r'^(Stage\s+\d+[a-z]?|Prologue)\b', selected_stage.get('name', ''), re.I,
+        )
+    selected_stage_name = (selected_stage.get('name') or '').strip() if selected_stage else ''
+    # PCS sometimes labels stages by type and route instead of "Stage N", for
+    # example "Time trial | Molonglo Valley - Molonglo Valley". The result
+    # heading and page subtitle use only the type ("Time trial"), so match
+    # that stable prefix while the stage-specific URL keeps the page scope.
+    selected_stage_type = re.split(r'\s*[|»]\s*', selected_stage_name, maxsplit=1)[0].strip()
     expected_heading = (
-        f"stage {source_stage_match.group(1)}" if source_stage_match
+        'prologue' if source_is_prologue
+        else selected_stage_heading.group(1).casefold()
+        if selected_stage_heading
+        else selected_stage_type.casefold()
+        if selected_stage
+        else f'stage {source_stage_number}' if source_stage_match
         else 'general classification'
     )
-    for heading in soup.find_all(['h3', 'h4']):
-        heading_text = (_clean_text(heading.get_text(' ', strip=True)) or '').casefold()
-        if heading_text == expected_heading:
+    headings = soup.find_all(['h3', 'h4'])
+    is_gc_page = bool(re.search(r'-gc(?:/|$)', source_path))
+    if is_stage_page:
+        def is_expected_stage_heading(heading):
+            heading_text = (_clean_text(heading.get_text(' ', strip=True)) or '').casefold()
+            return (
+                heading_text == expected_heading
+                or (
+                    heading_text.startswith(expected_heading)
+                    and heading_text[len(expected_heading):len(expected_heading) + 1]
+                    in {' ', '(', '|', '»'}
+                )
+            )
+
+        for heading in headings:
+            if not is_expected_stage_heading(heading):
+                continue
             container = heading.find_parent(class_='resultCont')
-            table = container.select_one('table.results') if container else heading.find_next('table', class_=lambda value: value and 'results' in value)
+            table = container.select_one('table.results') if container else None
             if table is not None:
                 break
+        subtitle = soup.select_one('.titleCont .title-line2')
+        subtitle_text = (_clean_text(subtitle.get_text(' ', strip=True)) or '').casefold() if subtitle else ''
+        source_title_confirms_stage = subtitle_text.startswith(expected_heading)
+        if table is None and (
+            source_title_confirms_stage
+            or any(is_expected_stage_heading(heading) for heading in headings)
+        ):
+            # When PCS places the stage heading outside its result container,
+            # use the visible table as a fallback.
+            table = next((
+                container.select_one('table.results')
+                for container in soup.select('.resultCont:not(.hide)')
+                if container.select_one('table.results') is not None
+            ), None)
+        if table is None and source_title_confirms_stage:
+            # Some PCS stage pages retain the normal result-column markers but
+            # omit the ``results`` class and heading/resultCont association.
+            for candidate in soup.select('.resultCont:not(.hide) table'):
+                candidate_headers = _parse_result_table_headers(candidate)
+                if (
+                    'rnk' in candidate_headers
+                    and (
+                        'ridername' in candidate_headers
+                        or 'teamnamelink' in candidate_headers
+                    )
+                ):
+                    table = candidate
+                    break
+    elif is_gc_page:
+        # PCS can include both a short visible GC table and a fuller hidden
+        # GC table on the explicit GC route. The stage route must use the
+        # visible table, but the GC route should retain the fullest GC table.
+        result_tables = [
+            container.select_one('table.results')
+            for container in soup.select('.resultCont')
+            if container.select_one('table.results') is not None
+        ]
+        if result_tables:
+            table = max(
+                result_tables,
+                key=lambda candidate: len(candidate.select('tbody tr')),
+            )
+    else:
+        for heading in headings:
+            heading_text = (_clean_text(heading.get_text(' ', strip=True)) or '').casefold()
+            if heading_text == expected_heading:
+                container = heading.find_parent(class_='resultCont')
+                table = container.select_one('table.results') if container else heading.find_next('table', class_=lambda value: value and 'results' in value)
+                if table is not None:
+                    break
+    # A stage-specific URL must never fall through to an arbitrary results
+    # table. PCS pages can contain both stage and GC results; if the expected
+    # heading/table is missing after a markup change, fail closed instead of
+    # caching another classification under this stage's identity.
+    if table is None and is_stage_page:
+        subtitle = soup.select_one('.titleCont .title-line2')
+        subtitle_text = (_clean_text(subtitle.get_text(' ', strip=True)) or '').casefold() if subtitle else ''
+        stage_label = (selected_stage.get('name') or '').casefold() if selected_stage else ''
+        is_team_time_trial = bool(
+            re.search(r'\bttt\b|team time trial', subtitle_text)
+            or re.search(r'\bttt\b|team time trial', stage_label)
+            or re.search(r'\bttt\b|team time trial', str(_extract_stage_metadata(soup).get('stage_type') or '').casefold())
+        )
+        team_results = _parse_ttt_team_results(soup)
+        if (
+            soup.select_one('.ttt-results') is not None
+            or (
+                is_team_time_trial
+                and soup.select_one('.resultCont table') is not None
+            )
+        ):
+            # PCS can publish team classifications for TTT stages without
+            # individual rider result rows. Keep stage metadata and distance
+            # without misrepresenting teams as riders.
+            stage_metadata = _extract_stage_metadata(soup)
+            if selected_stage:
+                stage_metadata['stage_number'] = selected_stage.get('stage_number')
+                stage_metadata['stage_id'] = selected_stage_id
+            stages = [
+                stage_links[stage_id]
+                for stage_id in sorted(
+                    stage_links,
+                    key=lambda value: (int(re.match(r'\d+', value).group()), value),
+                )
+            ]
+            return PcsRaceResultParse(
+                race_name=race_name, rows=[],
+                stages=([*stages, overall_link] if overall_link else stages) or None,
+                team_results=team_results,
+                **race_metadata, **stage_metadata,
+            )
+        raise PcsParseError(
+            f'Could not find the PCS results table for {expected_heading}.'
+        )
     if table is None and not is_stage_page:
         for heading in soup.find_all(['h3', 'h4']):
             if 'general classification' in (_clean_text(heading.get_text(' ', strip=True)) or '').casefold():
@@ -608,7 +847,16 @@ def parse_pcs_race_results_html(html, source_url=None):
         ))
 
     stage_metadata = _extract_stage_metadata(soup)
-    stages = [stage_links[number] for number in sorted(stage_links)]
+    if is_stage_page and selected_stage:
+        stage_metadata['stage_number'] = selected_stage.get('stage_number')
+        stage_metadata['stage_id'] = selected_stage_id
+    stages = [
+        stage_links[stage_id]
+        for stage_id in sorted(
+            stage_links,
+            key=lambda value: (int(re.match(r'\d+', value).group()), value),
+        )
+    ]
     if not parsed_rows:
         if not result_rows and {'rnk', 'ridername'}.issubset(headers):
             logger.info('PCS result table has no rows at %s', source_url or 'HTML')
@@ -616,6 +864,27 @@ def parse_pcs_race_results_html(html, source_url=None):
                 race_name=race_name, rows=[], stages=([*stages, overall_link] if overall_link else stages) or None,
                 **race_metadata, **stage_metadata,
             )
+        if is_stage_page:
+            subtitle = soup.select_one('.titleCont .title-line2')
+            subtitle_text = (_clean_text(subtitle.get_text(' ', strip=True)) or '').casefold() if subtitle else ''
+            stage_label = (selected_stage.get('name') or '').casefold() if selected_stage else ''
+            team_results = _parse_ttt_team_results(soup)
+            if (
+                soup.select_one('.ttt-results') is not None
+                or
+                re.search(r'\bttt\b|team time trial', subtitle_text)
+                or re.search(r'\bttt\b|team time trial', stage_label)
+                or pcs_time_trial_type(stage_metadata.get('stage_type')) == 'TTT'
+                or ('teamnamelink' in headers and 'ridername' not in headers)
+            ):
+                if selected_stage:
+                    stage_metadata['stage_number'] = selected_stage.get('stage_number')
+                    stage_metadata['stage_id'] = selected_stage_id
+                return PcsRaceResultParse(
+                    race_name=race_name, rows=[], stages=([*stages, overall_link] if overall_link else stages) or None,
+                    team_results=team_results,
+                    **race_metadata, **stage_metadata,
+                )
         raise PcsParseError('PCS returned a results table, but no rider rows could be read')
 
     logger.info('Parsed %s PCS result rows from %s', len(parsed_rows), source_url or 'HTML')

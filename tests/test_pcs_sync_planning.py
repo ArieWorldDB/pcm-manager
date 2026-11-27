@@ -58,6 +58,13 @@ def test_missing_stages_are_discovered_without_refetching_good_pages():
     assert plan(race(), {}) == [ResultRequest(None, False)]
 
 
+def test_prologue_stage_zero_is_scheduled_when_discovered():
+    stages = [{'stage_number': 0, 'name': 'Prologue'}, {'stage_number': 1}]
+    assert plan(race(), {'overall': page(stages=stages)}) == [
+        ResultRequest(0, False), ResultRequest(1, False),
+    ]
+
+
 def test_future_races_and_unknown_dates_do_not_get_rechecked():
     assert plan(race(start=date(2026, 12, 1), end=date(2026, 12, 1)), {}) == []
     assert plan(race(start=None, end=None), {'overall': page(NOW - timedelta(days=30))}) == []

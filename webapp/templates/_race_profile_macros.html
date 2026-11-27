@@ -3,7 +3,9 @@
     {% set normalized = label|lower %}
     {% if not label or normalized in ['none', 'null', '-'] %}<img class="race-profile-icon profile-icon-unknown" src="{{ url_for('static', filename='images/race-profiles/Icon_no.webp') }}" alt="Unknown profile" title="Unknown profile" width="{{ size }}" height="{{ size }}" loading="lazy" referrerpolicy="no-referrer">
     {% else %}
-        {% if 'mountain' in normalized %}
+        {% if 'cobble' in normalized %}
+            {% set icon = url_for('static', filename='images/race-profiles/Icon_COB.webp') %}
+        {% elif 'mountain' in normalized %}
             {% set icon = url_for('static', filename='images/race-profiles/Icon_MTNa.webp') if 'uphill' in normalized else url_for('static', filename='images/race-profiles/Icon_MTN.webp') %}
         {% elif 'hill' in normalized %}
             {% set icon = url_for('static', filename='images/race-profiles/Icon_HILa.webp') if 'uphill' in normalized else url_for('static', filename='images/race-profiles/Icon_HIL.webp') %}
@@ -14,4 +16,9 @@
         {% endif %}
         {% if icon %}<img class="race-profile-icon" src="{{ icon }}" alt="{{ label }}" title="{{ label }}" width="{{ size }}" height="{{ size }}" loading="lazy">{% else %}-{% endif %}
     {% endif %}
+{%- endmacro %}
+
+{% macro race_time_trial_icon(time_trial_type, size=30) -%}
+    {% if time_trial_type == 'TTT' %}<span class="race-ttt-indicator" style="font-weight:700;color:#17345d" title="Team time trial" aria-label="Team time trial">-</span>
+    {% else %}<img class="race-itt-icon{% if time_trial_type != 'ITT' %} is-unknown{% endif %}" style="opacity: {{ '1' if time_trial_type == 'ITT' else '.12' }}" src="{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}" alt="{{ 'Individual time trial' if time_trial_type == 'ITT' else 'Not a time trial' }}" title="{{ 'Individual time trial' if time_trial_type == 'ITT' else 'Not a time trial' }}" width="{{ size }}" height="{{ size }}" loading="lazy">{% endif %}
 {%- endmacro %}

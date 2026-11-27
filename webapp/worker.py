@@ -396,6 +396,11 @@ def run_external_sync_task(log_id, sync_type, season_year, gender, api_path=None
 @_celery.task(name='webapp.tasks.sync_pcs_national_race_calendar')
 def sync_pcs_national_race_calendar_task():
     """Daily scan of PCS national race results for the current year."""
+    from webapp.integrations.pcs.http import pcs_fetch_pause_remaining
+
+    pause_until = pcs_fetch_pause_remaining()
+    if pause_until is not None:
+        return {'status': 'cooldown', 'retry_at': pause_until.isoformat()}
     year = datetime.now(ZoneInfo('Europe/Amsterdam')).year
     sync_log = ExternalSyncLog(
         provider='pcs',
@@ -449,10 +454,14 @@ def run_pcs_shared_results_step_task(job_id):
 @_celery.task(name='webapp.tasks.start_pcs_shared_results_daily')
 def start_pcs_shared_results_daily_task():
     """Start one current-season daily job, only after its manual schema exists."""
+    from webapp.integrations.pcs.http import pcs_fetch_pause_remaining
     from webapp.integrations.pcs.sync_jobs import (
         create_sync_job, initial_sync_complete, runnable_sync_job_id, sync_storage_ready,
     )
 
+    pause_until = pcs_fetch_pause_remaining()
+    if pause_until is not None:
+        return {'status': 'cooldown', 'retry_at': pause_until.isoformat()}
     if not sync_storage_ready():
         return {'status': 'not_installed'}
     if not initial_sync_complete():
@@ -472,8 +481,12 @@ def start_pcs_shared_results_daily_task():
 @_celery.task(name='webapp.tasks.recover_pcs_shared_results')
 def recover_pcs_shared_results_task():
     """Restart unfinished queued work after a worker or broker interruption."""
+    from webapp.integrations.pcs.http import pcs_fetch_pause_remaining
     from webapp.integrations.pcs.sync_jobs import runnable_sync_job_id, sync_storage_ready
 
+    pause_until = pcs_fetch_pause_remaining()
+    if pause_until is not None:
+        return {'status': 'cooldown', 'retry_at': pause_until.isoformat()}
     if not sync_storage_ready():
         return {'status': 'not_installed'}
     job_id = runnable_sync_job_id()
@@ -486,7 +499,12 @@ def recover_pcs_shared_results_task():
 @_celery.task(name='webapp.tasks.check_pcs_unconfirmed_slugs_daily')
 def check_pcs_unconfirmed_slugs_daily_task():
     """Check up to 100 unconfirmed PCS rider slugs, five seconds apart."""
+    from webapp.integrations.pcs.http import pcs_fetch_pause_remaining
     from webapp.integrations.pcs.slug_checks import run_daily_unconfirmed_slug_checks
+
+    pause_until = pcs_fetch_pause_remaining()
+    if pause_until is not None:
+        return {'status': 'cooldown', 'retry_at': pause_until.isoformat()}
     sync_log = ExternalSyncLog(
         provider='pcs',
         sync_type='pcs_unconfirmed_slug_checks',
@@ -497,7 +515,7 @@ def check_pcs_unconfirmed_slugs_daily_task():
     db.session.add(sync_log)
     db.session.commit()
     try:
-        summary = run_daily_unconfirmed_slug_checks(request_limit=100, delay_seconds=5)
+        summary = run_daily_unconfirmed_slug_checks(request_limit=100)
         sync_log.status = 'partial' if summary['remaining'] or summary['failed'] else 'success'
         sync_log.requested_count = summary['checked']
         sync_log.synced_count = summary['verified']
@@ -524,6 +542,11 @@ def check_pcs_unconfirmed_slugs_daily_task():
 @_celery.task(name='webapp.tasks.prune_empty_pcs_races_weekly')
 def prune_empty_pcs_races_weekly_task():
     """Remove old PCS races only after fresh empty checks of every result scope."""
+    from webapp.integrations.pcs.http import pcs_fetch_pause_remaining
+
+    pause_until = pcs_fetch_pause_remaining()
+    if pause_until is not None:
+        return {'status': 'cooldown', 'retry_at': pause_until.isoformat()}
     sync_log = ExternalSyncLog(
         provider='pcs',
         sync_type='pcs_empty_race_cleanup',

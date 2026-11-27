@@ -17,6 +17,7 @@ from webapp.integrations.pcs.calendar import (
     sync_national_races, sync_uci_race_calendar,
 )
 from webapp.integrations.pcs.sync_results import sync_next_race_page
+from webapp.integrations.pcs.http import pcs_fetch_pause_remaining
 from webapp.models.main.pcs import PcsRaceCalendar
 
 _LOCK_KEY = 792211104
@@ -548,6 +549,9 @@ def run_sync_step(job_id, *, now=None):
     released if the worker disconnects. A crash before checkpointing can repeat
     the last request, so source page and calendar writes must be idempotent.
     """
+    pause_until = pcs_fetch_pause_remaining()
+    if pause_until is not None:
+        return {'status': 'cooldown', 'retry_at': pause_until.isoformat()}
     job_id = int(job_id)
     lock = db.engines['main'].connect()
     acquired = False
@@ -598,8 +602,7 @@ def run_sync_step(job_id, *, now=None):
                         last_error = NULL, updated_at = NOW() WHERE id = :id
                 """), {'id': item['id'], 'status': 'done' if done else 'pending'})
                 connection.execute(text("""
-                    UPDATE pcs_sync_jobs SET next_request_at = CASE WHEN job_type IN ('initial', 'uci_backfill')
-                        THEN NULL ELSE NOW() + INTERVAL '2 seconds' END
+                    UPDATE pcs_sync_jobs SET next_request_at = NULL
                     WHERE id = :id
                 """), {'id': job_id})
             return {'status': 'progress', 'work_key': item['work_key'], 'done': done}
@@ -618,8 +621,7 @@ def run_sync_step(job_id, *, now=None):
                         status = CASE WHEN :blocked THEN 'failed' ELSE status END,
                         next_request_at = CASE WHEN CAST(:retry_seconds AS double precision) IS NOT NULL
                             THEN NOW() + (CAST(:retry_seconds AS double precision) * INTERVAL '1 second')
-                            WHEN job_type IN ('initial', 'uci_backfill')
-                            THEN NULL ELSE NOW() + INTERVAL '2 seconds' END WHERE id = :id
+                            ELSE NULL END WHERE id = :id
                 """), {'id': job_id, 'error': message, 'blocked': blocked,
                        'retry_seconds': retry_seconds})
             if blocked:

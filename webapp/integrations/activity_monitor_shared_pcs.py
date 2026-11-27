@@ -111,7 +111,8 @@ def build_shared_monitor_view(shared, *, as_of):
         seen.add(key)
         confirmed = _is_activity(row, as_of)
         stage_key = str(row.get('stage_key') or '')
-        stage_match = re.fullmatch(r'stage:(\d+)', stage_key)
+        stage_match = re.fullmatch(r'stage:(\d{1,2}[a-z]?)', stage_key)
+        stage_number_match = re.match(r'\d+', stage_match.group(1)) if stage_match else None
         raw_url = str(row.get('source_url') or '')
         parsed = urlsplit(raw_url)
         safe_url = None
@@ -132,8 +133,10 @@ def build_shared_monitor_view(shared, *, as_of):
             'result_date': row.get('race_date'), 'race_name': row.get('race_name'),
             'pcs_race_id': row.get('pcs_race_id'), 'stage_key': stage_key,
             'race_category_display': row.get('classification') or '—',
-            'stage_number': int(stage_match.group(1)) if stage_match else None,
-            'stage_name': None, 'row_type': 'stage_result' if kind == 'stage' else kind,
+            'stage_number': int(stage_number_match.group()) if stage_number_match else None,
+            'stage_id': stage_match.group(1) if stage_match else None,
+            'stage_name': f'Stage {stage_match.group(1)}' if stage_match else None,
+            'row_type': 'stage_result' if kind == 'stage' else kind,
             'result_position': row.get('position_status') or row.get('position'),
             'safe_race_url': safe_url, 'activity_exclusion_reason': exclusion,
             'participation_display': 'Confirmed' if confirmed else None,

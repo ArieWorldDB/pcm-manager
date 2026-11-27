@@ -47,7 +47,14 @@ def audit_shared_results(connection):
         SELECT COUNT(*) FROM pcs_race_result_pages
         WHERE payload->>'_pcs_result_state' = 'no_result_rows'
     ''')).scalar_one()
-    return {'status': 'ok', **dict(counts), 'no_result_row_pages': empty_pages}
+    team_only_pages = connection.execute(text('''
+        SELECT COUNT(*) FROM pcs_race_result_pages
+        WHERE payload->>'_pcs_result_state' = 'team_result_only'
+    ''')).scalar_one()
+    return {
+        'status': 'ok', **dict(counts), 'no_result_row_pages': empty_pages,
+        'team_result_only_pages': team_only_pages,
+    }
 
 
 def project_page_entries(page, race, parsed):

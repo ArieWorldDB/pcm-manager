@@ -3,6 +3,7 @@
 This module does not schedule jobs, access the database, or contact PCS. The
 worker must supply persisted pages and record work and failures durably.
 """
+import re
 from calendar import monthrange
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta, timezone
@@ -12,7 +13,7 @@ from datetime import date, datetime, timedelta, timezone
 class ResultRequest:
     """A result page to fetch; a refresh must preserve a failed old result."""
 
-    stage_number: int | None
+    stage_number: int | str | None
     force_refresh: bool
 
 
@@ -88,17 +89,17 @@ def plan_result_requests(race, pages, *, today, now, initial_fill=False, initial
     for stage in (overall.payload or {}).get('stages') or []:
         if stage.get('is_overall'):
             continue
-        value = stage.get('stage_number')
+        value = stage.get('stage_id', stage.get('stage_number'))
         if isinstance(value, bool):
             continue
-        try:
-            number = int(value)
-        except (TypeError, ValueError):
+        stage_id = str(value or '').strip().lower()
+        match = re.fullmatch(r'(0|[1-9]\d?)[a-z]?', stage_id)
+        if not match or int(match.group(1)) > 99:
             continue
-        if 0 <= number <= 99 and str(value).strip() == str(number):
-            stage_numbers.add(number)
-    for number in sorted(stage_numbers):
-        request = request_for(number, pages.get(f'stage:{number}'))
+        stage_numbers.add((int(match.group(1)), stage_id))
+    for _, stage_id in sorted(stage_numbers):
+        request_number = int(stage_id) if stage_id.isdigit() else stage_id
+        request = request_for(request_number, pages.get(f'stage:{stage_id}'))
         if request:
             requests.append(request)
     return requests

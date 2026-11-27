@@ -1,5 +1,5 @@
 {% extends "base.html" %}
-{% from '_race_profile_macros.html' import race_profile_icon %}
+{% from '_race_profile_macros.html' import race_profile_icon, race_time_trial_icon %}
 
 {% block title %}Rider Detail - WDB{% endblock %}
 {% block body_class %}{{ 'activity-monitor-page' if can_view_activity else '' }}{% endblock %}
@@ -449,7 +449,7 @@ body.dark-mode .activity-detail-summary-card { background: #2d3748; }
                     <tr>
                         <td class="text-nowrap">{{ result.result_date.strftime('%d-%m-%Y') if result.result_date and result.result_date.strftime is defined else ((result.result_date|string)[8:10] ~ '-' ~ (result.result_date|string)[5:7] ~ '-' ~ (result.result_date|string)[:4] if result.result_date else '—') }}</td>
                         <td class="text-end">{{ (result.gc_position or result.result_position or '—') if result.is_general_classification else (result.result_position or result.gc_position or '—') }}</td>
-                        <td class="text-center profile-cell"><span class="race-profile-status-icons">{{ race_profile_icon(result.profile_display, 20) }}<img class="race-itt-icon{% if result.time_trial_type != 'ITT' %} is-unknown{% endif %}" src="{{ url_for('static', filename='images/race-profiles/Icon_TTR.webp') }}" alt="{{ 'Time trial' if result.time_trial_type == 'ITT' else 'Not a time trial' }}" title="{{ 'Time trial' if result.time_trial_type == 'ITT' else 'Not a time trial' }}" width="20" height="20" loading="lazy"></span></td>
+                        <td class="text-center profile-cell"><span class="race-profile-status-icons">{{ race_profile_icon(result.profile_display, 20) }}{{ race_time_trial_icon(result.time_trial_type, 20) }}</span></td>
                         <td class="race-cell">{% set race_link = result.stats_race_url or result.safe_race_url %}{% if race_link %}<a href="{{ race_link }}">{{ (result.race_name or '—')|replace(' - GC', '') }}</a>{% else %}{{ (result.race_name or '—')|replace(' - GC', '') }}{% endif %}{% if result.is_general_classification %} (GC){% elif result.stage_number %} (Stage {{ result.stage_number }}){% elif result.stage_name %} ({{ result.stage_name }}){% endif %}</td>
                         <td>{{ result.race_category_display or '' }}</td>
                     </tr>
