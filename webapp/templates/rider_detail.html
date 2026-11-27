@@ -1,0 +1,657 @@
+{% extends "base.html" %}
+{% from '_race_profile_macros.html' import race_profile_icon, race_time_trial_icon %}
+
+{% block title %}Rider Detail - WDB{% endblock %}
+{% block body_class %}{{ 'activity-monitor-page' if can_view_activity else '' }}{% endblock %}
+
+{% block styles %}
+body > .container {
+    max-width: 1760px;
+}
+.panel-card {
+    background: white;
+    border-radius: 8px;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.08);
+    margin-bottom: 20px;
+}
+.panel-card .card-body {
+    padding: 20px;
+}
+body.dark-mode .panel-card {
+    background: #2d3748;
+    box-shadow: none;
+    border: 1px solid #4a5568;
+}
+.meta-grid {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 12px;
+}
+.meta-item--full {
+    grid-column: 1 / -1;
+}
+.meta-label {
+    font-size: 0.8rem;
+    color: #6c757d;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+.meta-value {
+    font-weight: 600;
+}
+/* Stat value background color classes */
+td.stat-value.range-low {
+    background-color: #52565a !important;
+    box-shadow: inset 0 0 0 9999px #52565a !important;
+    color: #ffffff !important;
+}
+td.stat-value.range-decent {
+    background-color: #3886fe !important;
+    box-shadow: inset 0 0 0 9999px #3886fe !important;
+    color: #ffffff !important;
+}
+td.stat-value.range-good {
+    background-color: #28fc8b !important;
+    box-shadow: inset 0 0 0 9999px #28fc8b !important;
+    color: #000000 !important;
+}
+td.stat-value.range-very-good {
+    background-color: #fde13b !important;
+    box-shadow: inset 0 0 0 9999px #fde13b !important;
+    color: #000000 !important;
+}
+td.stat-value.range-excellent {
+    background-color: #fdb927 !important;
+    box-shadow: inset 0 0 0 9999px #fdb927 !important;
+    color: #000000 !important;
+}
+td.stat-value.range-elite {
+    background-color: #fd2756 !important;
+    box-shadow: inset 0 0 0 9999px #fd2756 !important;
+    color: #ffffff !important;
+}
+.stat-value {
+    font-weight: 700;
+}
+.stat-col {
+    width: 48px;
+    max-width: 48px;
+    min-width: 36px;
+    text-align: center;
+}
+.rider-stat-pair-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    border-bottom: 1px solid #dedede;
+}
+.rider-stats-card .card-body { padding: 12px; }
+.rider-stats-content {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) minmax(180px, 1fr);
+    align-items: stretch;
+    gap: 1rem;
+}
+.rider-stat-grid {
+    width: max-content;
+    max-width: 100%;
+    min-width: 0;
+}
+.rider-potential { margin: 4px 6px 0; font-weight: 600; }
+.rider-stat-edit-form .rider-stat-edit-cell { display: flex; align-items: center; width: 104px; min-height: 34px; }
+.rider-stat-edit-form .stat-input-row { display: flex; position: relative; align-items: center; width: 100%; height: 34px; min-width: 0; overflow: visible; border: 1px solid #dee2e6; border-radius: 4px; background: #fff; }
+.rider-stat-edit-form .stat-input-row .stat-input { flex: 0 0 50%; width: 50%; height: 30px; min-width: 0; padding: 0 2px; border: 0; text-align: center; font-size: 1.1rem; line-height: 1; appearance: textfield; -moz-appearance: textfield; }
+.rider-stat-edit-form .stat-input-row .delta-display { display: inline-flex; flex: 0 0 25%; width: 25%; justify-content: center; font-size: .82rem; line-height: 1; white-space: nowrap; }
+.rider-stat-edit-form .stat-input-row .delta-display[hidden] { display: inline-flex !important; visibility: hidden; }
+.rider-stat-edit-form .stat-input-row .stat-step-controls { display: flex; flex: 0 0 25%; width: 25%; height: 28px; flex-direction: column; opacity: 0; visibility: hidden; }
+.rider-stat-edit-form .stat-input-row:hover .stat-step-controls { opacity: 1; visibility: visible; }
+.rider-stat-edit-form .stat-step-controls button { width: 100%; height: 50%; font-size: 1.1rem; }
+.rider-stat-edit-form .stat-input.range-low { background: #52565a; color: #fff; }
+.rider-stat-edit-form .stat-input.range-decent { background: #3886fe; color: #fff; }
+.rider-stat-edit-form .stat-input.range-good { background: #28fc8b; color: #000; }
+.rider-stat-edit-form .stat-input.range-very-good { background: #fde13b; color: #000; }
+.rider-stat-edit-form .stat-input.range-excellent { background: #fdb927; color: #000; }
+.rider-stat-edit-form .stat-input.range-elite { background: #fd2756; color: #fff; }
+.rider-stat-edit-form .stat-input-row.has-stat-delta { outline: 2px solid #f59f00; outline-offset: 2px; }
+.rider-stat-edit-form .rider-potential .stat-input-row { width: 104px; }
+.rider-stat-edit-form .rider-potential .stat-input { flex-basis: 75%; width: 75%; font-size: 1rem; }
+.rider-stat-edit-form .rider-potential .stat-input { background: #e5e7eb; color: #212529; }
+.rider-stat-edit-form .rider-potential .stat-input:disabled { opacity: 1; color: #6b7280; cursor: not-allowed; }
+.rider-stat-edit-form .rider-potential .delta-display { display: none !important; }
+.rider-stat-edit-form .rider-potential .stat-step-controls { flex-basis: 25%; width: 25%; }
+.rider-stat-edit-form .rider-potential .stat-input-row:hover .stat-input { flex-basis: 75%; width: 75%; }
+.rider-stat-edit-form .rider-potential .stat-input-row:hover .stat-step-controls { flex-basis: 25%; width: 25%; }
+.rider-profile-links { display: flex; align-items: center; gap: .35rem; }
+.rider-profile-link {
+    display: inline-flex;
+    min-width: 30px;
+    height: 22px;
+    align-items: center;
+    justify-content: center;
+    padding: 0 .3rem;
+    border: 1px solid #aeb7c2;
+    border-radius: 4px;
+    color: #092f3a;
+    font-size: .7rem;
+    font-weight: 700;
+    line-height: 1;
+    text-decoration: none;
+}
+.rider-profile-link:hover { background: #e9eef4; color: #092f3a; }
+body.dark-mode .rider-profile-link { color: #f3f4f6; border-color: #64748b; }
+.rider-photo-frame {
+    position: absolute;
+    top: -28px;
+    right: 0;
+    bottom: 0;
+    width: 88px;
+    border-radius: 6px;
+    overflow: hidden;
+}
+.rider-photo {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+.rider-heading {
+    position: relative;
+    width: fit-content;
+    padding-right: calc(88px + .9rem);
+}
+.rider-heading-copy { display: flex; flex-direction: column; justify-content: space-between; }
+.rider-stat-entry {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 42px;
+    padding: 3px 4px;
+}
+.rider-stat-label { display: inline-flex !important; flex: 0 0 34px; width: 34px; min-width: 34px; align-items: center; font-size: .9rem; font-weight: 600; color: #092f3a; white-space: nowrap; visibility: visible !important; opacity: 1 !important; }
+.rider-stat-icon,
+.rider-stat-value {
+    display: inline-flex;
+    flex: 0 0 32px;
+    width: 32px;
+    height: 32px;
+    align-items: center;
+    justify-content: center;
+    justify-self: center;
+    font-weight: 700;
+}
+.rider-stat-icon { object-fit: contain; }
+.rider-stat-value { border-radius: 3px; font-size: 1rem; color: #111; background: #e5e7eb; }
+.rider-stat-value.range-low, .stat-edit-value.range-low { background: #52565a; color: #fff; }
+.rider-stat-value.range-decent, .stat-edit-value.range-decent { background: #3886fe; color: #fff; }
+.rider-stat-value.range-good, .stat-edit-value.range-good { background: #28fc8b; color: #000; }
+.rider-stat-value.range-very-good, .stat-edit-value.range-very-good { background: #fde13b; color: #000; }
+.rider-stat-value.range-excellent, .stat-edit-value.range-excellent { background: #fdb927; color: #000; }
+.rider-stat-value.range-elite, .stat-edit-value.range-elite { background: #fd2756; color: #fff; }
+.rider-stat-pending-delta { font-size: .75rem; font-weight: 700; white-space: nowrap; }
+.stat-edit-value {
+    display: inline-flex;
+    min-width: 2.1rem;
+    height: 1.65rem;
+    padding: 0 .3rem;
+    align-items: center;
+    justify-content: center;
+    border-radius: 3px;
+    font-weight: 700;
+    line-height: 1;
+}
+.stat-edit-potential-value {
+    background: #e5e7eb;
+    color: #212529;
+}
+.stat-edit-icon { width: 24px; height: 24px; object-fit: contain; }
+.stat-edit-delta-up { color: #198754; font-weight: 700; }
+.stat-edit-delta-down { color: #dc3545; font-weight: 700; }
+.stat-edit-delta-zero { color: var(--bs-secondary-color); }
+body.dark-mode .rider-stat-label { color: #f3f4f6; }
+@media (max-width: 900px) {
+    .rider-stat-icon, .rider-stat-value { width: 30px; height: 30px; }
+    .rider-stats-content { grid-template-columns: max-content minmax(140px, 1fr); gap: .75rem; }
+}
+@media (max-width: 575.98px) {
+    .rider-stats-content { grid-template-columns: minmax(0, 1fr); }
+    .rider-photo-frame { width: 64px; }
+    .rider-heading { padding-right: calc(64px + .9rem); }
+}
+.rider-recent-results-table { font-size: .9rem; }
+.rider-recent-results-table th, .rider-recent-results-table td { padding: .4rem .5rem; vertical-align: middle; }
+.rider-recent-results-table .race-cell { white-space: normal; }
+.rider-stats-results-column { min-width: 0; }
+.rider-stats-results-column .panel-card { min-width: 0; }
+.rider-recent-results-table { width: 100%; table-layout: fixed; }
+.rider-recent-results-table .date-column { width: 118px; }
+.rider-recent-results-table .position-column { width: 58px; }
+.rider-recent-results-table .profile-column { width: 64px; }
+.rider-recent-results-table .class-column { width: 76px; }
+.race-profile-status-icons { display: inline-flex; align-items: center; justify-content: center; gap: 4px; vertical-align: middle; }
+.race-profile-icon, .race-itt-icon { display: block; object-fit: contain; }
+.profile-icon-unknown, .race-itt-icon.is-unknown { opacity: .12; }
+body.dark-mode .meta-label {
+    color: #9ca3af;
+}
+{% if active_tab in ('activity', 'stats') %}
+.activity-detail-table { min-width: 760px; }
+.activity-detail-results-table { min-width: 1040px; }
+.activity-detail-checks-table { min-width: 1180px; }
+.activity-detail-table th { white-space: nowrap; }
+.activity-detail-table td { vertical-align: middle; }
+.activity-detail-summary-card { border-top: 3px solid #128577; }
+.activity-detail-summary-card .card-body { padding: .7rem .8rem; }
+.activity-detail-summary-value { font-size: 1.05rem; font-weight: 700; line-height: 1.2; }
+.activity-detail-summary-card .text-muted { font-size: .9rem; }
+.activity-detail-extra-result[hidden] { display: none; }
+.activity-rider-detail-header { display: grid; grid-template-columns: minmax(max-content, 1fr) minmax(0, 2fr) minmax(max-content, 1fr); align-items: center; gap: 1rem; }
+.activity-rider-detail-header-facts { display: flex; align-items: center; justify-content: center; flex-wrap: wrap; gap: .5rem 1.4rem; }
+.activity-rider-detail-header-fact { min-width: 105px; }
+.activity-rider-detail-header a,
+.activity-rider-detail-header a:hover { color: inherit; text-decoration: none; }
+@media (max-width: 1199.98px) { .activity-rider-detail-header { grid-template-columns: 1fr auto; } .activity-rider-detail-header-facts { grid-column: 1 / -1; justify-content: flex-start; } }
+body.dark-mode .activity-detail-summary-card { background: #2d3748; }
+{% endif %}
+@media (max-width: 768px) {
+    .meta-grid {
+        grid-template-columns: 1fr;
+    }
+
+    .meta-item--full {
+        grid-column: auto;
+    }
+}
+{% endblock %}
+
+{% block content %}
+{% set stats_rider = rider %}
+<div class="d-flex justify-content-between align-items-center mb-3">
+    <div>
+        <div class="rider-heading">
+          <div class="rider-heading-copy">
+            <h2 class="mb-1">
+                {{ (((activity.get('rider') or {}).get('first_name') or '') ~ ' ' ~ ((activity.get('rider') or {}).get('last_name') or ''))|trim or (((rider.first_name or '') ~ ' ' ~ (rider.last_name or ''))|trim) or rider.name or ('Rider #' ~ rider.rider_id) }}
+            </h2>
+            <div class="rider-profile-links" aria-label="External rider profiles">
+                {% if pcs_profile_url %}<a class="rider-profile-link" href="{{ pcs_profile_url }}" target="_blank" rel="noopener noreferrer" title="Open ProCyclingStats profile" aria-label="Open ProCyclingStats profile">PCS</a>{% endif %}
+                {% if rider.first_cycling_id %}<a class="rider-profile-link" href="https://firstcycling.com/rider.php?r={{ rider.first_cycling_id|int }}" target="_blank" rel="noopener noreferrer" title="Open FirstCycling profile" aria-label="Open FirstCycling profile">FC</a>{% endif %}
+            </div>
+          </div>
+            {% if rider.first_cycling_id %}
+            <div class="rider-photo-frame">
+                <img class="rider-photo" src="{{ url_for('web.firstcycling_rider_photo', first_cycling_id=rider.first_cycling_id|int) }}" alt="Photo of {{ ((rider.first_name or '') ~ ' ' ~ (rider.last_name or ''))|trim }}" width="88" height="88" loading="lazy" onerror="this.parentElement.hidden = true">
+            </div>
+            {% endif %}
+        </div>
+    </div>
+    <div class="d-flex gap-2">
+        <a class="btn btn-outline-secondary" href="{{ back_url }}">{{ back_label }}</a>
+    </div>
+</div>
+
+<ul class="nav nav-tabs mb-3" role="tablist" aria-label="Rider details">
+    {% if can_view_stats %}<li class="nav-item" role="presentation"><a class="nav-link {% if active_tab == 'stats' %}active{% endif %}" href="{{ url_for('web.rider_detail', rider_id=rider.rider_id, tab='stats', return_to=request.args.get('return_to'), return_label=request.args.get('return_label')) }}" {% if active_tab == 'stats' %}aria-current="page"{% endif %}>Stats</a></li>{% endif %}
+    {% if can_view_activity %}<li class="nav-item" role="presentation"><a class="nav-link {% if active_tab == 'activity' %}active{% endif %}" href="{{ url_for('web.rider_detail', rider_id=rider.rider_id, tab='activity', activity_rider_id=(activity.get('rider') or {}).get('id'), return_to=request.args.get('return_to'), return_label=request.args.get('return_label')) }}" {% if active_tab == 'activity' %}aria-current="page"{% endif %}>Activity</a></li>{% endif %}
+</ul>
+
+{% if active_tab == 'activity' and selected_namespace and can_view_activity %}
+{% set activity_monitor_active = 'riders' %}
+{% include 'activity_monitor_nav.html' %}
+{% endif %}
+
+{% if active_tab == 'activity' and can_view_activity %}
+{% set rider = activity.get('rider') %}
+{% set checks = activity.get('checks', []) %}
+{% set results = activity.get('results', []) %}
+{% set profile_links = activity.get('profile_links', []) %}
+{% set alerts = activity.get('alerts', []) %}
+{% set latest_activity = activity.get('latest_activity') %}
+{% set latest_activity_days_ago = activity.get('latest_activity_days_ago') %}
+{% set current_year = activity.get('current_year') %}
+{% set latest_pcs_check = activity.get('latest_pcs_check') %}
+{% set latest_firstcycling_check = activity.get('latest_firstcycling_check') %}
+{% set research_checks = activity.get('research_checks', []) %}
+{% set research_today = activity.get('research_today') %}
+{% set can_retire_rider = activity.get('can_retire_rider', false) %}
+{% set load_error = activity.get('load_error', false) %}
+{% set shared_identity_status = activity.get('shared_identity_status') %}
+{% set shared_pcs_enabled = activity.get('shared_pcs_enabled', false) %}
+{% set back_url = activity.get('back_url', back_url) %}
+{% include '_activity_monitor_rider_detail.html' %}
+{% else %}
+
+{% set activity_rider = activity.get('rider') %}
+{% if can_view_activity and activity_rider %}
+<section class="activity-rider-detail-header mb-3" aria-label="Rider overview">
+    <div>
+        <p class="text-muted mb-0">{{ rider_abbreviated_name or 'Unknown rider' }}</p>
+        <p class="text-muted mb-0">WorldDB #{{ activity_rider.worlddb_rider_id or '—' }}{% if activity_rider.first_cycling_id %} · FirstCycling {{ activity_rider.first_cycling_id }}{% endif %}</p>
+    </div>
+    <div class="activity-rider-detail-header-facts">
+        <div class="activity-rider-detail-header-fact"><div class="text-muted small">Team</div><div>{% if stats_rider.team_id %}{% if team %}<a href="{{ url_for('web.team_detail', team_id=stats_rider.team_id) }}">{{ team.team_name or stats_rider.team_name or ('Team #' ~ stats_rider.team_id) }}</a>{% else %}{{ stats_rider.team_name or ('Team #' ~ stats_rider.team_id) }}{% endif %}{% else %}{{ stats_rider.team_name or '-' }}{% endif %}</div></div>
+        <div class="activity-rider-detail-header-fact"><div class="text-muted small">Division</div><div>{{ activity_rider.division_name or '—' }}</div></div>
+        <div class="activity-rider-detail-header-fact"><div class="text-muted small">Nationality</div><div>{{ activity_rider.nationality or '—' }}</div></div>
+        <div class="activity-rider-detail-header-fact"><div class="text-muted small">Date of birth</div><div>{{ activity_rider.birth_date or '—' }}</div></div>
+    </div>
+    <div class="d-flex flex-column gap-2">
+        {% if activity_rider.is_retired %}
+        <span class="badge text-bg-secondary">Retired</span>
+        {% elif activity.get('can_retire_rider') %}
+        <form method="post" action="{{ url_for('web.activity_monitor_retire_rider', rider_id=activity_rider.id) }}" onsubmit="return confirm('Are you sure?');">
+            <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+            <button type="submit" class="btn btn-sm btn-danger w-100">Retire this rider</button>
+        </form>
+        {% endif %}
+        <a href="{{ url_for('web.teams', method='riders') }}" class="btn btn-sm btn-outline-secondary">← Back to riders</a>
+    </div>
+</section>
+
+<div class="row g-3 mb-3" aria-label="Stats overview">
+    <div class="col-6 rider-stats-results-column">
+{% if can_view_activity and activity_rider and not activity.get('load_error') %}
+{% set current_year = activity.get('current_year') %}
+{% set latest_rider_check = activity.get('checks', [])|selectattr('identity_generation', 'equalto', activity_rider.identity_generation)|first %}
+{% set recent_activity_results = activity.get('results', [])[:13] %}
+      <div class="row g-3 mb-3 rider-detail-summary-row">
+    <div class="col-12 col-md-6"><div class="panel-card card activity-detail-summary-card"><div class="card-body">
+        <div class="text-muted small mb-1">Race Days {{ current_year }}</div><div class="activity-detail-summary-value">{{ activity_rider.pcs_race_days_current_year if activity_rider.pcs_race_days_current_year is not none else 'N/A' }}</div>
+    </div></div></div>
+    <div class="col-12 col-md-6"><div class="panel-card card activity-detail-summary-card"><div class="card-body">
+        <div class="text-muted small mb-1">Last Checked</div>
+        {% if latest_rider_check and latest_rider_check.checked_at %}<div class="activity-detail-summary-value">{{ latest_rider_check.checked_at.strftime('%Y-%m-%d') if latest_rider_check.checked_at.strftime is defined else (latest_rider_check.checked_at|string)[:10] }}</div>
+        {% else %}<div class="activity-detail-summary-value">Not checked</div><div class="text-muted">No check is recorded.</div>{% endif %}
+    </div></div></div>
+      </div>
+{% endif %}
+        <div class="panel-card card rider-stats-card">
+            <div class="card-body">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                    <h5 class="mb-0">Rider Stats</h5>
+                    {% if can_edit_rider_stats %}<div class="d-flex align-items-center gap-2 me-2">
+                        <div class="btn-group btn-group-sm" role="group" aria-label="Adjust all rider stats">
+                            <button class="btn btn-outline-secondary" type="button" id="rider-stats-decrement" title="Decrease all stats by 1">−1 all</button>
+                            <button class="btn btn-outline-secondary" type="button" id="rider-stats-increment" title="Increase all stats by 1">+1 all</button>
+                        </div>
+                        <button class="btn btn-sm btn-primary" type="submit" form="rider-stats-edit-form" id="rider-stats-save" disabled>Save</button>
+                    </div>{% endif %}
+                </div>
+                {% if selected_namespace and rider_stats %}
+                {% set rider_stat_labels = {'fla': 'FLA', 'mo': 'MO', 'mm': 'MM', 'hil': 'HIL', 'dh': 'DH', 'cob': 'COB', 'tt': 'TT', 'prl': 'PRL', 'spr': 'SPR', 'acc': 'ACC', 'end': 'END', 'res': 'RES', 'rec': 'REC', 'att': 'ATT'} %}
+                {% set rider_stat_icons = {'mo': 'MTN', 'fla': 'FLA', 'mm': 'MM', 'cob': 'COB', 'hil': 'HIL', 'spr': 'SPR', 'dh': 'DHI', 'acc': 'ACC', 'att': 'ATT', 'end': 'STA', 'tt': 'TTR', 'res': 'RES', 'prl': 'PRL', 'rec': 'REC'} %}
+                {% set rider_stat_pairs = [('mo', 'fla'), ('mm', 'cob'), ('hil', 'spr'), ('dh', 'acc'), ('att', 'end'), ('tt', 'res'), ('prl', 'rec')] %}
+                {% if can_edit_rider_stats %}<form method="post" action="{{ url_for('web.rider_detail_save_stats', rider_id=rider.rider_id) }}" id="rider-stats-edit-form" class="rider-stat-edit-form">
+                    <input type="hidden" name="csrf_token" value="{{ csrf_token() }}">
+                    <input type="hidden" name="changes_json" id="rider-stats-changes" value="[]">
+                    <input type="hidden" name="return_to" value="{{ request.args.get('return_to', '') }}">
+                    <input type="hidden" name="return_label" value="{{ request.args.get('return_label', '') }}">
+                {% endif %}
+                <div class="rider-stats-content">
+                <div class="rider-stat-grid">
+                    {% for stat_pair in rider_stat_pairs %}
+                    <div class="rider-stat-pair-row">
+                        {% for stat_key in stat_pair %}
+                        {% set stat_value = rider_stats.get(stat_key) %}
+                        {% set pending_stat_edit = (rider_stat_pending_edits|default({})).get(stat_key) %}
+                        <div class="rider-stat-entry{% if not loop.first %} rider-stat-entry-secondary{% endif %}">
+                            <span class="rider-stat-label">{{ rider_stat_labels.get(stat_key, stat_key|upper) }}</span>
+                            <img class="rider-stat-icon" src="https://firstcycling.com/img/mini/Icon_{{ rider_stat_icons[stat_key] }}.png" width="44" height="44" alt="" title="{{ rider_stat_labels[stat_key] }}" loading="lazy" referrerpolicy="no-referrer">
+                            {% if can_edit_rider_stats and stat_value is not none %}
+                            <span class="rider-stat-edit-cell"><div class="stat-input-row">
+                                <span class="delta-display" data-stat-name="{{ stat_key }}" hidden></span>
+                                <input type="number" class="form-control stat-input" data-stat-name="{{ stat_key }}" data-original-value="{{ stat_value }}" data-saved-value="{{ stat_value }}" data-pending-original-value="{{ pending_stat_edit.original_value if pending_stat_edit else stat_value }}" value="{{ stat_value }}" min="50" max="85" step="1">
+                            </div></span>
+                            {% else %}<span class="rider-stat-value{% if stat_value is not none %}{% if stat_value <= 65 %} range-low{% elif stat_value <= 69 %} range-decent{% elif stat_value <= 73 %} range-good{% elif stat_value <= 77 %} range-very-good{% elif stat_value <= 81 %} range-excellent{% else %} range-elite{% endif %}{% endif %}" data-stat-value="{{ stat_value if stat_value is not none else '' }}">{{ stat_value if stat_value is not none else '-' }}</span>
+                                {% if pending_stat_edit and pending_stat_edit.delta_value is not none %}
+                                {% set pending_delta = pending_stat_edit.delta_value|float %}
+                                <span class="rider-stat-pending-delta {% if pending_delta > 0 %}stat-edit-delta-up{% elif pending_delta < 0 %}stat-edit-delta-down{% else %}stat-edit-delta-zero{% endif %}" title="Awaiting approval">{% if pending_delta > 0 %}+{% endif %}{{ '%g'|format(pending_delta)|replace('.', ',') }}</span>
+                                {% endif %}
+                            {% endif %}
+                        </div>
+                        {% endfor %}
+                    </div>
+                    {% endfor %}
+                    {% if rider_stats.get('potential') is not none %}
+                    <div class="rider-potential">Potential:
+                        {% set potential_display = '%.1f'|format(rider_stats.get('potential') / 2) %}
+                        {% set pending_potential_edit = (rider_stat_pending_edits|default({})).get('potential') %}
+                        {% if can_edit_rider_stats %}<span class="rider-stat-edit-cell"><div class="stat-input-row">
+                            <span class="delta-display" data-stat-name="potential" hidden></span>
+                            <input type="number" class="form-control stat-input" data-stat-name="potential" data-original-value="{{ potential_display }}" data-saved-value="{{ potential_display }}" data-pending-original-value="{{ '%.1f'|format(pending_potential_edit.original_value|float / 2) if pending_potential_edit and pending_potential_edit.original_value is not none else potential_display }}" value="{{ potential_display }}" min="2.5" max="6" step="0.5" {% if rider_potential_locked %}disabled title="Potential is fixed for riders born 32 or more years ago."{% endif %}>
+                        </div></span>
+                        {% else %}{{ potential_display }}
+                            {% if pending_potential_edit and pending_potential_edit.delta_value is not none %}
+                            {% set potential_delta = pending_potential_edit.delta_value|float / 2 %}
+                            <span class="rider-stat-pending-delta {% if potential_delta > 0 %}stat-edit-delta-up{% elif potential_delta < 0 %}stat-edit-delta-down{% else %}stat-edit-delta-zero{% endif %}" title="Awaiting approval">{% if potential_delta > 0 %}+{% endif %}{{ '%g'|format(potential_delta)|replace('.', ',') }}</span>
+                            {% endif %}
+                        {% endif %}
+                    {% endif %}
+                </div>
+                {% if can_edit_rider_stats %}</form>{% endif %}
+                </div>
+                {% elif selected_namespace %}
+                <p class="text-muted mb-0">No rider stats found for this rider in the selected namespace.</p>
+                {% else %}
+                <p class="text-muted mb-0">Select a namespace to view rider stats.</p>
+                {% endif %}
+            </div>
+        </div>
+    </div>
+    </div>
+{% if can_view_activity and activity_rider and not activity.get('load_error') %}
+    <div class="col-6 rider-stats-results-column">
+        <section class="panel-card card mb-0 h-100 rider-recent-results-card" aria-labelledby="rider-recent-results-heading">
+            <div class="card-header"><strong id="rider-recent-results-heading">Last Race Results</strong></div>
+            <div class="table-wrapper"><table class="table table-sm table-hover mb-0 rider-recent-results-table">
+                <colgroup><col class="date-column"><col class="position-column"><col class="profile-column"><col><col class="class-column"></colgroup>
+                <thead><tr><th>Date</th><th class="text-end">Pos</th><th class="text-center">Profile</th><th>Race</th><th>Class</th></tr></thead>
+                <tbody>
+                    {% for result in recent_activity_results %}
+                    <tr>
+                        <td class="text-nowrap">{{ result.result_date.strftime('%d-%m-%Y') if result.result_date and result.result_date.strftime is defined else ((result.result_date|string)[8:10] ~ '-' ~ (result.result_date|string)[5:7] ~ '-' ~ (result.result_date|string)[:4] if result.result_date else '—') }}</td>
+                        <td class="text-end">{{ (result.gc_position or result.result_position or '—') if result.is_general_classification else (result.result_position or result.gc_position or '—') }}</td>
+                        <td class="text-center profile-cell"><span class="race-profile-status-icons">{{ race_profile_icon(result.profile_display, 20) }}{{ race_time_trial_icon(result.time_trial_type, 20) }}</span></td>
+                        <td class="race-cell">{% set race_link = result.stats_race_url or result.safe_race_url %}{% if race_link %}<a href="{{ race_link }}">{{ (result.race_name or '—')|replace(' - GC', '') }}</a>{% else %}{{ (result.race_name or '—')|replace(' - GC', '') }}{% endif %}{% if result.is_general_classification %} (GC){% elif result.stage_number %} (Stage {{ result.stage_number }}){% elif result.stage_name %} ({{ result.stage_name }}){% endif %}</td>
+                        <td>{{ result.race_category_display or '' }}</td>
+                    </tr>
+                    {% else %}<tr><td colspan="5" class="text-muted">No race results are recorded in the Activity Monitor.</td></tr>{% endfor %}
+                </tbody>
+            </table></div>
+        </section>
+    </div>
+{% endif %}
+
+    <div class="col-12">
+    <div class="panel-card card rider-stat-edits-panel">
+    <div class="card-body">
+        <h5 class="mb-3">Stat Edits</h5>
+        {% if rider_stat_edits %}
+        <div class="table-wrapper">
+            <table class="table table-sm table-hover align-middle mb-0">
+                <thead>
+                    <tr>
+                        <th>Date</th>
+                        <th>Race</th>
+                        <th>Classification</th>
+                        <th class="stat-col">Stat</th>
+                        <th class="stat-col">Original</th>
+                        <th class="stat-col">Final</th>
+                        <th class="stat-col">Delta</th>
+                        <th>Approval</th>
+                        <th>Release</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {% set edit_stat_icons = {'mo': 'MTN', 'fla': 'FLA', 'mm': 'MM', 'cob': 'COB', 'hil': 'HIL', 'spr': 'SPR', 'dh': 'DHI', 'acc': 'ACC', 'att': 'ATT', 'end': 'STA', 'tt': 'TTR', 'res': 'RES', 'prl': 'PRL', 'rec': 'REC'} %}
+                    {% for edit in rider_stat_edits %}
+                    {% set is_potential_edit = edit.stat in ('potential', 'pot') %}
+                    <tr>
+                        <td class="text-nowrap">{{ edit.saved_at.strftime('%Y-%m-%d') if edit.saved_at else '—' }}</td>
+                        <td>
+                            {% if edit.source.url %}
+                            <a href="{{ edit.source.url }}" class="text-reset text-decoration-none">
+                                {{ edit.source.label }}
+                            </a>
+                            {% else %}
+                            {{ edit.source.label }}
+                            {% endif %}
+                        </td>
+                        <td>
+                            {% if edit.source.classification %}<div>{{ edit.source.classification }}</div>{% endif %}
+                        </td>
+                        <td class="stat-col">
+                            {% if edit.stat in ('potential', 'pot') %}POT
+                            {% elif edit.stat in edit_stat_icons %}
+                            <img class="stat-edit-icon" src="https://firstcycling.com/img/mini/Icon_{{ edit_stat_icons[edit.stat] }}.png" alt="{{ edit.stat|upper }}" title="{{ edit.stat|upper }}" loading="lazy" referrerpolicy="no-referrer">
+                            {% else %}{{ edit.stat|upper }}{% endif %}
+                        </td>
+                        <td class="stat-col">
+                            {% set original_value = edit.original_value|float %}
+                            {% if is_potential_edit %}
+                            <span class="stat-edit-value stat-edit-potential-value">{{ '%g'|format(original_value / 2)|replace('.', ',') }}</span>
+                            {% else %}
+                            <span class="stat-edit-value {% if original_value <= 65 %}range-low{% elif original_value <= 69 %}range-decent{% elif original_value <= 73 %}range-good{% elif original_value <= 77 %}range-very-good{% elif original_value <= 81 %}range-excellent{% else %}range-elite{% endif %}">{{ edit.original_value }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="stat-col">
+                            {% set edit_value = edit.final_value|float %}
+                            {% if is_potential_edit %}
+                            <span class="stat-edit-value stat-edit-potential-value">{{ '%g'|format(edit_value / 2)|replace('.', ',') }}</span>
+                            {% else %}
+                            <span class="stat-edit-value {% if edit_value <= 65 %}range-low{% elif edit_value <= 69 %}range-decent{% elif edit_value <= 73 %}range-good{% elif edit_value <= 77 %}range-very-good{% elif edit_value <= 81 %}range-excellent{% else %}range-elite{% endif %}">{{ edit.final_value }}</span>
+                            {% endif %}
+                        </td>
+                        <td class="stat-col">
+                            {% if edit.delta_value is not none %}
+                            {% set displayed_delta = edit.delta_value|float / 2 if is_potential_edit else edit.delta_value|float %}
+                            {% set displayed_delta_text = '%g'|format(displayed_delta)|replace('.', ',') %}
+                            {% if displayed_delta > 0 %}<span class="stat-edit-delta-up">+{{ displayed_delta_text }}</span>
+                            {% elif displayed_delta < 0 %}<span class="stat-edit-delta-down">{{ displayed_delta_text }}</span>
+                            {% else %}<span class="stat-edit-delta-zero">{{ displayed_delta_text }}</span>{% endif %}
+                            {% else %}<span class="stat-edit-delta-zero">—</span>{% endif %}
+                        </td>
+                        <td>
+                            <span class="badge {% if edit.is_approved %}bg-success{% else %}bg-warning text-dark{% endif %}">
+                                {{ edit.approval_status }}
+                            </span>
+                        </td>
+                        <td>
+                            <span class="badge {% if edit.is_released %}bg-primary{% else %}bg-secondary{% endif %}">
+                                {{ edit.release_status }}
+                            </span>
+                        </td>
+                    </tr>
+                    {% endfor %}
+                </tbody>
+            </table>
+        </div>
+        {% elif selected_namespace %}
+        <p class="text-muted mb-0">No stat edits found for this rider.</p>
+        {% else %}
+        <p class="text-muted mb-0">Select a namespace to view stat edits.</p>
+        {% endif %}
+    </div>
+    </div>
+</div>
+{% endif %}
+{% endif %}
+{% endblock %}
+
+{% block scripts %}
+{% if active_tab == 'stats' and can_edit_rider_stats %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/stat_input_controls.css', v=32) }}">
+<script src="{{ url_for('static', filename='js/stat_input_controls.js') }}"></script>
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    const form = document.getElementById('rider-stats-edit-form');
+    const saveButton = document.getElementById('rider-stats-save');
+    const changesInput = document.getElementById('rider-stats-changes');
+    if (!form || !saveButton || !changesInput) return;
+
+    if (window.initializeStatInputControls) window.initializeStatInputControls(form);
+    const inputs = Array.from(form.querySelectorAll('.stat-input'));
+    const colorClasses = ['range-low', 'range-decent', 'range-good', 'range-very-good', 'range-excellent', 'range-elite'];
+
+    function refresh() {
+        const changes = [];
+        inputs.forEach(function (input) {
+            const original = Number.parseFloat(input.dataset.originalValue);
+            const value = Number.parseFloat(input.value);
+            const pendingOriginal = Number.parseFloat(input.dataset.pendingOriginalValue);
+            const hasPendingDelta = Number.isFinite(pendingOriginal) && pendingOriginal !== original;
+            const delta = input.parentElement.querySelector('.delta-display');
+            const changed = Number.isFinite(original) && Number.isFinite(value) && value !== original;
+            if (changed && !input.disabled) changes.push({ stat_name: input.dataset.statName, final_value: value });
+            if (delta) {
+                const amount = value - (hasPendingDelta ? pendingOriginal : original);
+                delta.textContent = (amount > 0 ? '+' : '') + (input.dataset.statName === 'potential' ? String(amount).replace('.', ',') : String(amount));
+                delta.hidden = !changed && !hasPendingDelta;
+                delta.style.color = amount > 0 ? '#198754' : '#dc3545';
+            }
+            input.parentElement.classList.toggle('has-stat-delta', changed || hasPendingDelta);
+            input.classList.remove(...colorClasses);
+            if (input.dataset.statName !== 'potential' && Number.isFinite(value)) {
+                input.classList.add(value <= 65 ? 'range-low' : value <= 69 ? 'range-decent' : value <= 73 ? 'range-good' : value <= 77 ? 'range-very-good' : value <= 81 ? 'range-excellent' : 'range-elite');
+            }
+        });
+        changesInput.value = JSON.stringify(changes);
+        saveButton.disabled = changes.length === 0;
+    }
+
+    const adjustAll = function (amount) {
+        inputs.forEach(function (input) {
+            if (input.disabled || input.dataset.statName === 'potential') return;
+            const value = Number.parseFloat(input.value);
+            if (!Number.isFinite(value)) return;
+            input.value = Math.max(50, Math.min(85, value + amount));
+        });
+        refresh();
+    };
+
+    inputs.forEach(function (input) { input.addEventListener('input', refresh); });
+    document.getElementById('rider-stats-decrement')?.addEventListener('click', () => adjustAll(-1));
+    document.getElementById('rider-stats-increment')?.addEventListener('click', () => adjustAll(1));
+    form.addEventListener('submit', function () { refresh(); });
+    refresh();
+});
+</script>
+{% endif %}
+{% if active_tab == 'activity' %}
+<script>
+(() => {
+    const button = document.getElementById('activity-evidence-toggle');
+    const extraRows = document.querySelectorAll('.activity-detail-extra-result');
+    if (!button || extraRows.length === 0) return;
+    button.addEventListener('click', () => {
+        const expanded = button.getAttribute('aria-expanded') === 'true';
+        extraRows.forEach((row) => { row.hidden = expanded; });
+        button.setAttribute('aria-expanded', String(!expanded));
+        button.textContent = expanded ? 'More' : 'Less';
+    });
+})();
+</script>
+{% endif %}
+<script>
+document.addEventListener('DOMContentLoaded', function () {
+    function getStatValueClass(value) {
+        if (value <= 65) return 'range-low';
+        if (value >= 66 && value <= 69) return 'range-decent';
+        if (value >= 70 && value <= 73) return 'range-good';
+        if (value >= 74 && value <= 77) return 'range-very-good';
+        if (value >= 78 && value <= 81) return 'range-excellent';
+        if (value >= 82) return 'range-elite';
+        return '';
+    }
+
+    document.querySelectorAll('.stat-value[data-stat-value]').forEach(function (cell) {
+        var raw = cell.getAttribute('data-stat-value');
+        var value = parseInt(String(raw || '').trim(), 10);
+        if (!isNaN(value)) {
+            var cls = getStatValueClass(value);
+            if (cls) {
+                cell.classList.add(cls);
+            }
+        }
+    });
+});
+</script>
+{% endblock %}

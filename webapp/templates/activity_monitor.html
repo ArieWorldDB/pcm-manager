@@ -1,0 +1,122 @@
+{% extends "base.html" %}
+
+{% block title %}Activity Monitor - WDB{% endblock %}
+{% block body_class %}activity-monitor-page{% endblock %}
+
+{% block styles %}
+.activity-monitor-overview { width: 100%; }
+.activity-monitor-intro {
+    background: #eaf1f5;
+    border: 1px solid #d8e2e9;
+    padding: 1rem;
+}
+.activity-monitor-stat {
+    min-height: 128px;
+    border-top: 3px solid #128577;
+}
+.activity-monitor-stat .value {
+    font-size: 1.8rem;
+    font-weight: 700;
+    line-height: 1.2;
+}
+.activity-monitor-progress { min-height: 152px; }
+.activity-monitor-progress-track {
+    height: 16px;
+    border: 1px solid #a9b2b8;
+    background: #e4e7e9;
+    overflow: hidden;
+}
+.activity-monitor-progress-fill {
+    height: 100%;
+    background: #128577;
+}
+body.dark-mode .activity-monitor-intro {
+    background: #202d3b;
+    border-color: #34485d;
+}
+body.dark-mode .activity-monitor-progress-track { background: #333b44; }
+{% endblock %}
+
+{% block content %}
+<div class="activity-monitor-overview">
+    <h2 class="mb-3">Activity overview</h2>
+
+    {% if selected_namespace %}
+    <section class="activity-monitor-intro mb-3" aria-label="Activity Monitor information">
+        <div class="d-flex justify-content-between align-items-start gap-3">
+            <div>
+                <p class="mb-0">
+                    Activity Monitor uses saved PCS race results to show rider activity and profile links that need review.
+                </p>
+            </div>
+            <button class="btn btn-sm btn-outline-secondary flex-shrink-0" type="button"
+                    data-bs-toggle="collapse" data-bs-target="#activity-monitor-details"
+                    aria-expanded="false" aria-controls="activity-monitor-details">Read more</button>
+        </div>
+        <div class="collapse" id="activity-monitor-details">
+            <hr>
+            <p class="mb-2 text-muted">
+                Saved PCS results show rider activity. Profile links and review decisions help ensure results are attributed to the right rider.
+            </p>
+            <h6 class="mb-2">How to use Activity Monitor</h6>
+            <ol class="mb-2 ps-3">
+                <li>Open <strong>Riders</strong> to find riders and review saved activity.</li>
+                <li>Open a rider to review the PCS profile and saved race evidence.</li>
+                <li>Use <strong>Review</strong> to find profile details that need a closer look.</li>
+            </ol>
+        </div>
+    </section>
+
+    {% set activity_monitor_active = 'overview' %}
+    {% include 'activity_monitor_nav.html' %}
+
+    {% if can_transfer_history %}
+    <div class="d-flex justify-content-end gap-2 mb-3">
+        <a class="btn btn-outline-secondary btn-sm" href="{{ url_for('web.activity_monitor_history_transfer') }}">History transfer</a>
+    </div>
+    {% endif %}
+
+    {% if load_error %}
+    <div class="alert alert-warning" role="status">
+        The selected namespace could not be read. No data was changed.
+    </div>
+    {% elif history_unavailable %}
+    <div class="alert alert-info" role="status">
+        No saved Activity Monitor records are available for this dataset yet.
+        Choose the local test dataset that contains the imported rider history.
+    </div>
+    {% elif monitor_summary %}
+    {% set monitored = monitor_summary.monitored or 0 %}
+
+    <div class="row g-2 mb-2">
+        <div class="col-12 col-sm-6 col-xl">
+            <section class="panel-card card activity-monitor-stat h-100"><div class="card-body">
+                <div class="text-muted small mb-2">Riders monitored</div>
+                <div class="value">{{ "{:,}".format(monitored) }}</div>
+                <div class="text-muted mt-2">Riders in current DB</div>
+            </div></section>
+        </div>
+        <div class="col-12 col-sm-6 col-xl">
+            <section class="panel-card card activity-monitor-stat h-100"><div class="card-body">
+                <div class="text-muted small mb-2">Riders active this year</div>
+                <div class="value">{{ "{:,}".format(monitor_summary.riders_active_this_year or 0) }}</div>
+                <div class="text-muted mt-2">Riders with at least one confirmed race</div>
+            </div></section>
+        </div>
+        <div class="col-12 col-sm-6 col-xl">
+            <section class="panel-card card activity-monitor-stat h-100"><div class="card-body">
+                <div class="text-muted small mb-2">Needs Review</div>
+                <div class="value">{{ "{:,}".format(monitor_summary.needs_attention or 0) }}</div>
+                <div class="text-muted mt-2">Riders whose profile details need review</div>
+            </div></section>
+        </div>
+    </div>
+
+    <a class="btn btn-success mt-2" href="{{ url_for('web.activity_monitor_riders', status='monitored') }}">Open riders</a>
+    {% endif %}
+
+    {% else %}
+    <div class="alert alert-info">Select an active namespace to open its Activity Monitor.</div>
+    {% endif %}
+</div>
+{% endblock %}

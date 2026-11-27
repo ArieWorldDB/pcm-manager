@@ -1,6 +1,14 @@
 import os
 from datetime import timedelta
 
+SITE_VERSION = 'v0.4.2'  # Update this as needed for new releases
+
+def _env_bool(name, default=False):
+    value = os.getenv(name)
+    if value is None:
+        return default
+    return value.strip().lower() in ('1', 'true', 'yes', 'on')
+
 
 # Path Helper Functions
 def get_base_data_path():
@@ -23,8 +31,8 @@ def get_cdb_import_path(namespace_name):
 
 
 def get_cdb_releases_path(namespace_name):
-    """Get the CDB releases directory path for a namespace"""
-    return os.path.join(get_namespace_path(namespace_name), 'cdb', 'releases')
+    """Get the releases directory path for a namespace."""
+    return os.path.join(get_namespace_path(namespace_name), 'releases')
 
 
 def get_photos_path(namespace_name=None):
@@ -79,7 +87,7 @@ class Config:
     # SQLAlchemy - Main Database
     SQLALCHEMY_DATABASE_URI = os.getenv('DATABASE_URL')
     SQLALCHEMY_TRACK_MODIFICATIONS = False
-    SQLALCHEMY_ECHO = False
+    SQLALCHEMY_ECHO = _env_bool('SQLALCHEMY_ECHO', False)
     
     # SQLAlchemy - Connection Pooling
     SQLALCHEMY_ENGINE_OPTIONS = {
@@ -106,9 +114,14 @@ class Config:
     PROVISIONER_DATABASE_URL = os.getenv('PROVISIONER_DATABASE_URL')
     
     # Redis & Celery
-    REDIS_URL = os.getenv('REDIS_URL', 'cache://localhost:6379/0')
+    REDIS_URL = os.getenv('REDIS_URL', 'redis://localhost:6379/0')
     CELERY_BROKER_URL = REDIS_URL
     CELERY_RESULT_BACKEND = REDIS_URL
+
+    # Discord
+    DISCORD_BOT_TOKEN = os.getenv('DISCORD_BOT_TOKEN')
+    DISCORD_CLIENT_ID = os.getenv('DISCORD_CLIENT_ID')
+    DISCORD_CLIENT_SECRET = os.getenv('DISCORD_CLIENT_SECRET')
     
     # Session
     SESSION_COOKIE_NAME = 'pcm_session'
@@ -121,11 +134,32 @@ class Config:
     ALLOWED_EXTENSIONS = {'db', 'cdb', 'sqlite', 'sqlite3'}
     
     # External API
-    CYCLING_API_KEY = os.getenv('CYCLING_API_KEY')
-    CYCLING_API_URL = os.getenv('CYCLING_API_URL')
+    FIRST_CYCLING_BASE_URL = os.getenv('FIRST_CYCLING_BASE_URL', 'https://firstcycling.com')
+    FIRST_CYCLING_API_PATH = os.getenv('FIRST_CYCLING_API_PATH') or 'dora'
+    FIRST_CYCLING_SYNC_VERBOSE = _env_bool('FIRST_CYCLING_SYNC_VERBOSE', False)
+    FIRST_CYCLING_SYNC_LOG_INTERVAL = int(os.getenv('FIRST_CYCLING_SYNC_LOG_INTERVAL', '50'))
+    FIRST_CYCLING_SYNC_METHOD = os.getenv('FIRST_CYCLING_SYNC_METHOD', 'bulk_refresh')
+    FIRST_CYCLING_FETCH_ONLY_MISSING = _env_bool('FIRST_CYCLING_FETCH_ONLY_MISSING', False)
+    FIRST_CYCLING_REQUEST_DELAY_SECONDS = float(os.getenv('FIRST_CYCLING_REQUEST_DELAY_SECONDS', '1'))
+    FIRST_CYCLING_RETRY_ATTEMPTS = int(os.getenv('FIRST_CYCLING_RETRY_ATTEMPTS', '4'))
+    FIRST_CYCLING_RETRY_BACKOFF_SECONDS = float(os.getenv('FIRST_CYCLING_RETRY_BACKOFF_SECONDS', '3'))
+
+    ACTIVITY_MONITOR_SHARED_PCS_ENABLED = _env_bool('ACTIVITY_MONITOR_SHARED_PCS_ENABLED', False)
+    PCS_SYNC_RECOVERY_INTERVAL_SECONDS = max(
+        1.0, float(os.getenv('PCS_SYNC_RECOVERY_INTERVAL_SECONDS', '5'))
+    )
     
     # Security
     BCRYPT_LOG_ROUNDS = int(os.getenv('BCRYPT_LOG_ROUNDS', 12))
+    AUTH_INVITE_TOKEN_HOURS = int(os.getenv('AUTH_INVITE_TOKEN_HOURS', '72'))
+    AUTH_RESET_TOKEN_MINUTES = int(os.getenv('AUTH_RESET_TOKEN_MINUTES', '30'))
+    AUTH_LOGIN_FAILURE_LIMIT = int(os.getenv('AUTH_LOGIN_FAILURE_LIMIT', '5'))
+    AUTH_LOGIN_LOCK_SECONDS = int(os.getenv('AUTH_LOGIN_LOCK_SECONDS', '60'))
+    AUTH_LOGIN_LOCK_MAX_SECONDS = int(os.getenv('AUTH_LOGIN_LOCK_MAX_SECONDS', '900'))
+
+    # Site metadata
+    SITE_VERSION = SITE_VERSION
+    STATIC_ASSET_VERSION = os.getenv('STATIC_ASSET_VERSION', SITE_VERSION)
     
     # WTForms
     WTF_CSRF_ENABLED = True
@@ -135,13 +169,17 @@ class Config:
     PCM_VERSIONS = [
         ('PCM2024', 'PCM 2024'), 
         ('PCM2025', 'PCM 2025'),
+        ('PCM2026', 'PCM 2026'),
+    ]
+
+    SEASONS = [
+        {'year': 2026, 'gender': 'Men', 'is_default': True}
     ]
 
 
 class DevelopmentConfig(Config):
     """Development configuration"""
     DEBUG = True
-    SQLALCHEMY_ECHO = True
     FLASK_ENV = 'development'
 
 

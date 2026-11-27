@@ -9,7 +9,7 @@ from sqlalchemy.orm import sessionmaker
 from sqlalchemy import create_engine, text
 from sqlalchemy_utils import database_exists, create_database
 from webapp.models.ns.schema import (
-    NamespaceBase, NAMESPACE_TABLES, CDBCyclist,
+    NamespaceBase, NAMESPACE_TABLES, CDBCyclist, CDBTeam, CDBCountry, CDBDivision, CDBRegion,
     get_field_mapping, get_cdb_table_name
 )
 from datetime import datetime
@@ -30,16 +30,12 @@ class NamespaceProvisioner:
         """Create a new namespace database
         
         Args:
-            database_name: Name for the database (will be prefixed with ns_)
+            database_name: Name for the database
             
         Returns:
-            Full database name (with ns_ prefix)
+            Created database name
         """
-        # Add ns_ prefix if not already present
-        if not database_name.startswith('ns_'):
-            full_db_name = f'ns_{database_name}'
-        else:
-            full_db_name = database_name
+        full_db_name = database_name
         
         # Connect to admin database to create new database
         admin_engine = create_engine(self.admin_db_url)
@@ -56,7 +52,8 @@ class NamespaceProvisioner:
                 return full_db_name
             
             # Create the database
-            conn.execute(text(f'CREATE DATABASE {full_db_name}'))
+            safe_db_name = full_db_name.replace('"', '""')
+            conn.execute(text(f'CREATE DATABASE "{safe_db_name}"'))
             logger.info(f"Created database: {full_db_name}")
         
         admin_engine.dispose()
@@ -102,7 +99,7 @@ class NamespaceProvisioner:
         """Full provisioning: create database and schema
         
         Args:
-            database_name: Base name for the database (ns_ prefix added automatically)
+            database_name: Name for the namespace database
             
         Returns:
             dict with database_name and connection_string
@@ -127,11 +124,7 @@ class NamespaceProvisioner:
         Args:
             database_name: Name of database to drop
         """
-        # Add ns_ prefix if not already present
-        if not database_name.startswith('ns_'):
-            full_db_name = f'ns_{database_name}'
-        else:
-            full_db_name = database_name
+        full_db_name = database_name
         
         admin_engine = create_engine(self.admin_db_url)
         
@@ -146,7 +139,8 @@ class NamespaceProvisioner:
             """), {"dbname": full_db_name})
             
             # Drop the database
-            conn.execute(text(f'DROP DATABASE IF EXISTS {full_db_name}'))
+            safe_db_name = full_db_name.replace('"', '""')
+            conn.execute(text(f'DROP DATABASE IF EXISTS "{safe_db_name}"'))
             logger.info(f"Dropped database: {full_db_name}")
         
         admin_engine.dispose()
@@ -189,6 +183,54 @@ class CDBImporter:
             self.pg_session.close()
         if self.pg_engine:
             self.pg_engine.dispose()
+
+    def import_mapped_table(
+        self, table_type, model_class, batch_size=1000, boolean_fields=None,
+        commit_batches=True,
+    ):
+        """Import a mapped CDB table from SQLite to PostgreSQL."""
+        boolean_fields = set(boolean_fields or [])
+        mapping = get_field_mapping(self.pcm_version, table_type)
+        cdb_table_name = mapping['cdb_table_name']
+        field_map = mapping['fields']
+
+        cdb_fields = list(field_map.values())
+        query = f"SELECT {', '.join(cdb_fields)} FROM {cdb_table_name}"
+
+        logger.info(f"Importing from {cdb_table_name} using {self.pcm_version} mapping")
+
+        cursor = self.sqlite_conn.cursor()
+        cursor.execute(query)
+
+        total_imported = 0
+        batch = []
+
+        for row in cursor:
+            row_data = {}
+            for internal_field, cdb_field in field_map.items():
+                value = row[cdb_field]
+                if internal_field in boolean_fields and value is not None:
+                    value = bool(value)
+                row_data[internal_field] = value
+
+            batch.append(model_class(**row_data))
+
+            if len(batch) >= batch_size:
+                self.pg_session.bulk_save_objects(batch)
+                if commit_batches:
+                    self.pg_session.commit()
+                total_imported += len(batch)
+                logger.info(f"Imported {total_imported} {table_type} rows...")
+                batch = []
+
+        if batch:
+            self.pg_session.bulk_save_objects(batch)
+            if commit_batches:
+                self.pg_session.commit()
+            total_imported += len(batch)
+
+        logger.info(f"Total {table_type} rows imported: {total_imported}")
+        return total_imported
     
     def import_cyclists(self, batch_size=1000):
         """Import cyclist table from SQLite to PostgreSQL
@@ -201,69 +243,88 @@ class CDBImporter:
         Returns:
             Number of cyclists imported
         """
-        # Get field mapping for this PCM version
-        mapping = get_field_mapping(self.pcm_version, 'cyclist')
-        cdb_table_name = mapping['cdb_table_name']
-        field_map = mapping['fields']
-        
-        # Build SELECT query with CDB field names
-        cdb_fields = list(field_map.values())
-        query = f"SELECT {', '.join(cdb_fields)} FROM {cdb_table_name}"
-        
-        logger.info(f"Importing from {cdb_table_name} using {self.pcm_version} mapping")
-        
-        cursor = self.sqlite_conn.cursor()
-        cursor.execute(query)
-        
-        total_imported = 0
-        batch = []
-        
-        for row in cursor:
-            # Map CDB fields to internal model fields
-            cyclist_data = {}
-            for internal_field, cdb_field in field_map.items():
-                value = row[cdb_field]
-                # Special handling for boolean fields
-                if internal_field == 'is_locked' and value is not None:
-                    value = bool(value)
-                cyclist_data[internal_field] = value
-            
-            # Create cyclist object with internal field names
-            cyclist = CDBCyclist(**cyclist_data)
-            batch.append(cyclist)
-            
-            # Insert batch when it reaches batch_size
-            if len(batch) >= batch_size:
-                self.pg_session.bulk_save_objects(batch)
-                self.pg_session.commit()
-                total_imported += len(batch)
-                logger.info(f"Imported {total_imported} cyclists...")
-                batch = []
-        
-        # Insert remaining records
-        if batch:
-            self.pg_session.bulk_save_objects(batch)
-            self.pg_session.commit()
-            total_imported += len(batch)
-        
-        logger.info(f"Total cyclists imported: {total_imported}")
-        return total_imported
+        return self.import_mapped_table('cyclist', CDBCyclist, batch_size=batch_size)
+
+    def import_teams(self, batch_size=1000):
+        """Import team table from SQLite to PostgreSQL."""
+        return self.import_mapped_table('team', CDBTeam, batch_size=batch_size)
+
+    def import_countries(self, batch_size=1000):
+        """Import country lookup table from SQLite to PostgreSQL."""
+        return self.import_mapped_table('country', CDBCountry, batch_size=batch_size)
+
+    def import_divisions(self, batch_size=1000):
+        """Import division lookup table from SQLite to PostgreSQL."""
+        return self.import_mapped_table('division', CDBDivision, batch_size=batch_size)
+
+    def import_regions(self, batch_size=1000):
+        """Import region lookup table from SQLite to PostgreSQL."""
+        return self.import_mapped_table(
+            'region',
+            CDBRegion,
+            batch_size=batch_size,
+            boolean_fields={'is_europe'},
+        )
     
-    def import_all_tables(self):
+    def import_all_tables(self, *, replace_existing=True):
         """Import all supported tables
         
         Returns:
             dict with import statistics for each table
         """
+        from sqlalchemy import delete
+        from webapp.models.ns.schema import (
+            CDBCyclist, CDBTeam, CDBRegion, CDBDivision, CDBCountry,
+        )
+
         stats = {}
-        
         logger.info(f"Starting data import from CDB ({self.pcm_version})...")
-        
-        # Import cyclists
-        logger.info("[1/1] Importing cyclists...")
-        stats['cyclists'] = self.import_cyclists()
-        
-        logger.info("Import complete!")
+
+        # Keep the previous mapped CDB intact unless every table in the new
+        # import succeeds. Activity Monitor tables and all other namespace
+        # workflow tables are deliberately outside this replacement set.
+        try:
+            if replace_existing:
+                with self.pg_session.begin():
+                    for model in (CDBCyclist, CDBTeam, CDBRegion, CDBDivision, CDBCountry):
+                        self.pg_session.execute(delete(model))
+                    stats['countries'] = self.import_mapped_table(
+                        'country', CDBCountry, commit_batches=False
+                    )
+                    stats['divisions'] = self.import_mapped_table(
+                        'division', CDBDivision, commit_batches=False
+                    )
+                    stats['regions'] = self.import_mapped_table(
+                        'region', CDBRegion, boolean_fields={'is_europe'},
+                        commit_batches=False,
+                    )
+                    stats['teams'] = self.import_mapped_table(
+                        'team', CDBTeam, commit_batches=False
+                    )
+                    stats['cyclists'] = self.import_mapped_table(
+                        'cyclist', CDBCyclist, commit_batches=False
+                    )
+                    for table_name in (
+                        'cdb_country', 'cdb_division', 'cdb_region', 'cdb_team', 'cdb_cyclist'
+                    ):
+                        self.pg_session.execute(text(f"""
+                            SELECT setval(
+                                pg_get_serial_sequence('{table_name}', 'id'),
+                                COALESCE((SELECT MAX(id) FROM {table_name}), 1),
+                                EXISTS (SELECT 1 FROM {table_name})
+                            )
+                        """))
+            else:
+                stats['countries'] = self.import_countries()
+                stats['divisions'] = self.import_divisions()
+                stats['regions'] = self.import_regions()
+                stats['teams'] = self.import_teams()
+                stats['cyclists'] = self.import_cyclists()
+        except Exception:
+            self.pg_session.rollback()
+            raise
+
+        logger.info("CDB import complete; mapped tables were replaced atomically.")
         return stats
     
     def __enter__(self):

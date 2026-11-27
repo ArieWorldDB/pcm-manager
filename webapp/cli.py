@@ -2,13 +2,16 @@
 import os
 import time
 import sqlite3
+from contextlib import contextmanager
 import click
 from sqlalchemy import create_engine, text
 from sqlalchemy.engine.url import make_url
 from sqlalchemy.exc import OperationalError
+from flask import current_app
 from flask.cli import with_appcontext
 from webapp.extensions import db, bcrypt
-from webapp.models import User, Role, Resource, Action, RolePermission, Namespace
+from webapp.models import User, Role, Namespace
+from webapp.rbac_seed import sync_rbac_metadata
 from webapp.config import (
     get_base_data_path,
     ensure_base_directories,
@@ -16,6 +19,50 @@ from webapp.config import (
     get_cdb_import_path
 )
 from webapp.namespace.setup import NamespaceProvisioner, CDBImporter
+
+
+@contextmanager
+def _startup_init_lock(log=None):
+    """Use a PostgreSQL advisory lock to prevent concurrent startup initialization."""
+    if log is None:
+        log = lambda _: None
+
+    provisioner_url = os.getenv('PROVISIONER_DATABASE_URL')
+    engine = None
+    owns_engine = False
+
+    if provisioner_url:
+        engine = create_engine(provisioner_url, isolation_level='AUTOCOMMIT')
+        owns_engine = True
+    else:
+        engine = db.engines.get('main') or db.engine
+
+    if engine.dialect.name != 'postgresql':
+        # Non-Postgres environments (e.g. tests) do not support advisory locks.
+        yield
+        return
+
+    lock_key = 792211001
+    conn = engine.connect()
+    lock_acquired = False
+    try:
+        log('   Waiting for startup initialization lock...')
+        conn.execute(text('SELECT pg_advisory_lock(:lock_key)'), {'lock_key': lock_key})
+        lock_acquired = True
+        log('   ✓ Startup initialization lock acquired')
+        yield
+    finally:
+        try:
+            if lock_acquired:
+                try:
+                    conn.rollback()
+                except Exception:
+                    pass
+                conn.execute(text('SELECT pg_advisory_unlock(:lock_key)'), {'lock_key': lock_key})
+        finally:
+            conn.close()
+            if owns_engine:
+                engine.dispose()
 
 
 @click.command('init-db')
@@ -30,62 +77,82 @@ def initialize_database(log=None):
     if log is None:
         log = lambda _: None
 
-    log('=== PCM Manager Database Initialization ===')
+    log('=== WorldDB Database Initialization ===')
 
-    # Step 0: Provision database and required extension
-    log('\n0. Ensuring database and extensions are provisioned...')
-    _provision_main_database(log=log)
-    log('   ✓ Database provisioning complete')
+    with _startup_init_lock(log=log):
+        # Step 0: Provision database and required extension
+        log('\n0. Ensuring database and extensions are provisioned...')
+        _provision_main_database(log=log)
+        log('   ✓ Database provisioning complete')
 
-    # Step 1: Create tables
-    log('\n1. Creating database tables...')
-    db.create_all(bind_key='main')
+        # Step 1: Create tables
+        log('\n1. Creating database tables...')
+        # PCS calendar and result page storage are installed together using
+        # reviewed manual SQL, not implicitly during application startup.
+        main_tables = [
+            table for table in db.metadatas['main'].tables.values()
+            if table.name not in {
+                'pcs_race_calendar',
+                'pcs_race_result_pages',
+                'pcs_firstcycling_race_matches',
+            }
+        ]
+        db.metadatas['main'].create_all(
+            bind=db.engines['main'],
+            tables=main_tables,
+        )
 
-    # Create association tables using raw SQL (to avoid FK resolution issues)
-    from webapp.models.main.user import create_association_tables
-    create_association_tables()
+        # Create association tables using raw SQL (to avoid FK resolution issues)
+        from webapp.models.main.user import create_association_tables
+        create_association_tables()
 
-    # Configure User relationships AFTER all tables exist
-    from webapp.models.main.user import configure_user_relationships
-    configure_user_relationships()
+        # Configure User relationships AFTER all tables exist
+        from webapp.models.main.user import configure_user_relationships
+        configure_user_relationships()
 
-    log('   ✓ Database tables created')
+        log('   ✓ Database tables created')
 
-    # Step 2: Seed roles
-    log('\n2. Seeding roles, resources, actions, and permissions...')
-    _seed_roles(log=log)
-    log('   ✓ Roles seeded')
+        # Step 2: Seed roles
+        log('\n2. Seeding roles, resources, actions, and permissions...')
+        _seed_roles(log=log)
+        log('   ✓ Roles seeded')
 
-    # Step 3: Create admin user (if credentials provided via env vars)
-    admin_username = os.getenv('ADMIN_USERNAME')
-    admin_password = os.getenv('ADMIN_PASSWORD')
+        # Step 3: Create admin user (if credentials provided via env vars)
+        admin_username = os.getenv('ADMIN_USERNAME')
+        admin_password = os.getenv('ADMIN_PASSWORD')
 
-    if admin_username and admin_password:
-        log(f'\n3. Creating admin user: {admin_username}...')
-
-        # Check if user already exists
-        existing_user = User.query.filter_by(username=admin_username).first()
-        if existing_user:
-            log('   Admin user already exists, skipping')
-        else:
-            admin_user = User(
-                username=admin_username,
-                is_active=True,
-                is_superadmin=True
-            )
-            admin_user.set_password(admin_password)
-
-            # Assign admin role
+        if admin_username and admin_password:
+            log(f'\n3. Creating admin user: {admin_username}...')
             admin_role = Role.query.filter_by(name='admin').first()
-            if admin_role:
-                admin_user.roles.append(admin_role)
 
-            db.session.add(admin_user)
-            db.session.commit()
-            log(f'   ✓ Admin user created: {admin_username}')
-    else:
-        log('\n3. Skipping admin user creation (no credentials provided)')
-        log('   Use "flask create-admin" to create an admin user manually')
+            # Check if user already exists
+            existing_user = User.query.filter_by(username=admin_username).first()
+            if existing_user:
+                # Idempotent self-heal: ensure role assignment exists on reruns.
+                if admin_role and not existing_user.roles.filter_by(id=admin_role.id).first():
+                    existing_user.roles.append(admin_role)
+                    db.session.commit()
+                    log('   ✓ Existing admin user found; admin role reattached')
+                else:
+                    log('   ⚠ Admin user already exists, skipping')
+            else:
+                admin_user = User(
+                    username=admin_username,
+                    is_active=True,
+                    is_superadmin=True
+                )
+                admin_user.set_password(admin_password)
+
+                # Assign admin role
+                if admin_role:
+                    admin_user.roles.append(admin_role)
+
+                db.session.add(admin_user)
+                db.session.commit()
+                log(f'   ✓ Admin user created: {admin_username}')
+        else:
+            log('\n3. Skipping admin user creation (no credentials provided)')
+            log('   Use "flask create-admin" to create an admin user manually')
 
     log('\n=== Initialization Complete ===\n')
 
@@ -144,146 +211,8 @@ def _provision_main_database(log=None):
 
 
 def _seed_roles(log=None):
-    """Internal function to seed roles, resources, actions, and permissions"""
-    if log is None:
-        log = lambda _: None
-
-    # Create roles
-    roles_data = [
-        {'name': 'admin', 'display_name': 'Administrator', 
-         'description': 'Full system access', 'is_system_role': True},
-        {'name': 'release_manager', 'display_name': 'Release Manager',
-         'description': 'Can create namespaces and publish releases', 'is_system_role': True},
-        {'name': 'stat_editor', 'display_name': 'Stat Editor',
-         'description': 'Can edit rider/team/race statistics', 'is_system_role': True},
-        {'name': 'viewer', 'display_name': 'Viewer',
-         'description': 'Read-only access to data', 'is_system_role': True},
-    ]
-    
-    roles = {}
-    for role_data in roles_data:
-        role = Role.query.filter_by(name=role_data['name']).first()
-        if not role:
-            role = Role(**role_data)
-            db.session.add(role)
-            log(f'  Created role: {role.name}')
-        roles[role.name] = role
-    
-    # Create resources
-    resources_data = [
-        {'name': 'users', 'app_panel': 'admin', 'description': 'User management'},
-        {'name': 'roles', 'app_panel': 'admin', 'description': 'Role management'},
-        {'name': 'namespaces', 'app_panel': 'admin', 'description': 'Namespace management'},
-        {'name': 'riders', 'app_panel': 'stat_manager', 'description': 'Rider data'},
-        {'name': 'teams', 'app_panel': 'stat_manager', 'description': 'Team data'},
-        {'name': 'races', 'app_panel': 'stat_manager', 'description': 'Race data'},
-        {'name': 'stats', 'app_panel': 'stat_manager', 'description': 'Statistics'},
-        {'name': 'photos', 'app_panel': 'photo_manager', 'description': 'Photo management'},
-        {'name': 'palmares', 'app_panel': 'palmares_manager', 'description': 'Career achievements'},
-        {'name': 'releases', 'app_panel': 'release_manager', 'description': 'Release management'},
-    ]
-    
-    resources = {}
-    for resource_data in resources_data:
-        resource = Resource.query.filter_by(name=resource_data['name']).first()
-        if not resource:
-            resource = Resource(**resource_data)
-            db.session.add(resource)
-            log(f'  Created resource: {resource.name}')
-        resources[resource.name] = resource
-    
-    # Create actions
-    actions_data = [
-        {'name': 'create', 'description': 'Create new records'},
-        {'name': 'read', 'description': 'View/read records'},
-        {'name': 'update', 'description': 'Edit existing records'},
-        {'name': 'delete', 'description': 'Delete records'},
-        {'name': 'publish', 'description': 'Publish releases'},
-        {'name': 'download', 'description': 'Download files'},
-        {'name': 'import', 'description': 'Import data from external sources'},
-        {'name': 'export', 'description': 'Export data'},
-    ]
-    
-    actions = {}
-    for action_data in actions_data:
-        action = Action.query.filter_by(name=action_data['name']).first()
-        if not action:
-            action = Action(**action_data)
-            db.session.add(action)
-            log(f'  Created action: {action.name}')
-        actions[action.name] = action
-    
-    db.session.commit()
-    
-    # Create permissions matrix
-    permissions_matrix = {
-        'admin': {
-            # Admin has all permissions on all resources
-            'users': ['create', 'read', 'update', 'delete'],
-            'roles': ['create', 'read', 'update', 'delete'],
-            'namespaces': ['create', 'read', 'update', 'delete'],
-            'riders': ['create', 'read', 'update', 'delete'],
-            'teams': ['create', 'read', 'update', 'delete'],
-            'races': ['create', 'read', 'update', 'delete'],
-            'stats': ['create', 'read', 'update', 'delete'],
-            'photos': ['create', 'read', 'update', 'delete'],
-            'palmares': ['create', 'read', 'update', 'delete', 'import'],
-            'releases': ['create', 'read', 'update', 'delete', 'publish', 'download', 'export'],
-        },
-        'release_manager': {
-            'namespaces': ['create', 'read'],
-            'riders': ['read'],
-            'teams': ['read'],
-            'races': ['read'],
-            'stats': ['read'],
-            'photos': ['read', 'create', 'update', 'delete'],
-            'palmares': ['read'],
-            'releases': ['create', 'read', 'update', 'publish', 'download', 'export'],
-        },
-        'stat_editor': {
-            'riders': ['read', 'update'],
-            'teams': ['read', 'update'],
-            'races': ['read', 'update'],
-            'stats': ['create', 'read', 'update'],
-            'photos': ['read', 'create', 'update'],
-            'palmares': ['create', 'read', 'update', 'import'],
-            'releases': ['read', 'download'],
-        },
-        'viewer': {
-            'riders': ['read'],
-            'teams': ['read'],
-            'races': ['read'],
-            'stats': ['read'],
-            'photos': ['read'],
-            'palmares': ['read'],
-            'releases': ['read', 'download'],
-        },
-    }
-    
-    for role_name, resource_actions in permissions_matrix.items():
-        role = roles[role_name]
-        for resource_name, action_names in resource_actions.items():
-            resource = resources[resource_name]
-            for action_name in action_names:
-                action = actions[action_name]
-                
-                # Check if permission already exists
-                existing = RolePermission.query.filter_by(
-                    role_id=role.id,
-                    resource_id=resource.id,
-                    action_id=action.id
-                ).first()
-                
-                if not existing:
-                    permission = RolePermission(
-                        role_id=role.id,
-                        resource_id=resource.id,
-                        action_id=action.id
-                    )
-                    db.session.add(permission)
-    
-    db.session.commit()
-    log('Roles, resources, actions, and permissions seeded successfully!')
+    """Internal compatibility wrapper for RBAC metadata synchronization."""
+    sync_rbac_metadata(log=log)
 
 
 @click.command('seed-roles')
@@ -299,6 +228,233 @@ def seed_roles_command():
 def namespace():
     """Namespace database management commands"""
     pass
+
+
+@namespace.command('install-activity-monitor')
+@click.argument('namespace_slug')
+@click.option('--yes', is_flag=True, help='Skip the confirmation prompt')
+@with_appcontext
+def install_activity_monitor_schema(namespace_slug, yes):
+    """Explicitly create the shared Activity Monitor tables in one namespace.
+
+    This command is intentionally separate from application startup and normal
+    namespace provisioning. It creates missing tables only; it imports no
+    rider data and does not alter existing tables.
+    """
+    selected_namespace = Namespace.query.filter_by(slug=namespace_slug).first()
+    if selected_namespace is None:
+        raise click.ClickException(f"Namespace '{namespace_slug}' was not found.")
+    if not yes and not click.confirm(
+        f"Create the Activity Monitor tables in namespace '{namespace_slug}'?"
+    ):
+        click.echo('Aborted; no namespace database was changed.')
+        return
+
+    from webapp.models.ns.activity_monitor import (
+        ACTIVITY_MONITOR_TABLES,
+        ActivityMonitorBase,
+    )
+
+    try:
+        namespace_connection_string = selected_namespace.build_connection_string()
+    except ValueError as exc:
+        raise click.ClickException(
+            f"Namespace '{namespace_slug}' has no usable database connection."
+        ) from exc
+
+    engine = create_engine(namespace_connection_string)
+    try:
+        ActivityMonitorBase.metadata.create_all(engine, checkfirst=True)
+    except Exception as exc:
+        raise click.ClickException(f'Could not create Activity Monitor tables: {exc}') from exc
+    finally:
+        engine.dispose()
+
+    click.echo(
+        f"Created or confirmed {len(ACTIVITY_MONITOR_TABLES)} Activity Monitor tables "
+        f"in namespace '{namespace_slug}'. No rider records were imported."
+    )
+
+
+@namespace.command('install-global-activity-monitor-history')
+@click.option('--yes', is_flag=True, help='Skip the confirmation prompt')
+@with_appcontext
+def install_global_activity_monitor_history(yes):
+    """Explicitly install the cross-namespace history archive in the main DB."""
+    if not yes and not click.confirm(
+        'Create the Activity Monitor history archive table in the main database?'
+    ):
+        click.echo('Aborted; no database was changed.')
+        return
+
+    from webapp.tools.activity_monitor_global_history import install_global_history_schema
+
+    engine = db.engines.get('main') or db.engine
+    try:
+        install_global_history_schema(engine)
+    except Exception as exc:
+        raise click.ClickException(
+            f'Could not create the shared Activity Monitor history table: {exc}'
+        ) from exc
+    click.echo(
+        'The shared Activity Monitor history archive is installed in the main database. '
+        'No namespace records were copied.'
+    )
+
+
+@namespace.command('archive-activity-monitor-history')
+@click.argument('namespace_slug')
+@click.option('--apply', 'apply_changes', is_flag=True,
+              help='Copy/update archived records. Without this flag, only a preview is performed.')
+@click.option('--yes', is_flag=True, help='Skip the confirmation prompt for --apply')
+@with_appcontext
+def archive_activity_monitor_history(namespace_slug, apply_changes, yes):
+    """Preview or synchronize Activity Monitor history into the main database."""
+    selected_namespace = Namespace.query.filter_by(slug=namespace_slug).first()
+    if selected_namespace is None:
+        raise click.ClickException(f"Namespace '{namespace_slug}' was not found.")
+    if apply_changes and not yes and not click.confirm(
+        f"Copy Activity Monitor history from '{namespace_slug}' into the main database?"
+    ):
+        click.echo('Aborted; no history was copied.')
+        return
+
+    from webapp.tools.activity_monitor_global_history import archive_namespace_history
+
+    try:
+        source_url = selected_namespace.build_connection_string()
+    except ValueError as exc:
+        raise click.ClickException(
+            f"Namespace '{namespace_slug}' has no usable database connection."
+        ) from exc
+    source_engine = create_engine(source_url, pool_pre_ping=True)
+    main_engine = db.engines.get('main') or db.engine
+    try:
+        summary = archive_namespace_history(
+            source_engine,
+            main_engine,
+            selected_namespace.slug,
+            apply=apply_changes,
+        )
+    except Exception as exc:
+        raise click.ClickException(
+            f'Activity Monitor history archive stopped safely: {exc}'
+        ) from exc
+    finally:
+        source_engine.dispose()
+
+    click.echo(
+        f"Namespace: {summary['namespace']}\n"
+        f"History records found: {summary['records']}\n"
+        f"Records to synchronize: {summary.get('records_to_sync', 0)}\n"
+        f"Records written: {summary['written']}\n"
+        f"Mode: {'apply' if apply_changes else 'dry run'}"
+    )
+    for table_name, count in summary['tables'].items():
+        click.echo(f'  {table_name}: {count}')
+
+
+@namespace.command('import-activity-monitor-history')
+@click.argument('namespace_slug')
+@click.option('--source', 'source_path', required=True, type=click.Path(exists=True, dir_okay=False, path_type=str),
+              help='Path to the local Activity Monitor SQLite database.')
+@click.option('--apply', 'apply_changes', is_flag=True,
+              help='Write the validated history in one transaction. Without this flag, only a dry run is performed.')
+@click.option('--actor-user-id', type=int, default=None,
+              help='PCM Manager user ID to record as the initiating user.')
+@with_appcontext
+def import_activity_monitor_history(namespace_slug, source_path, apply_changes, actor_user_id):
+    """Validate or import local Activity Monitor history into a namespace."""
+    selected_namespace = Namespace.query.filter_by(slug=namespace_slug).first()
+    if selected_namespace is None:
+        raise click.ClickException(f"Namespace '{namespace_slug}' was not found.")
+    try:
+        namespace_connection_string = selected_namespace.build_connection_string()
+    except ValueError as exc:
+        raise click.ClickException(
+            f"Namespace '{namespace_slug}' has no usable database connection."
+        ) from exc
+
+    from webapp.tools.activity_monitor_history_import import run_history_import
+
+    engine = create_engine(namespace_connection_string, pool_pre_ping=True)
+    try:
+        run_history_import(
+            engine,
+            source_path,
+            apply=apply_changes,
+            actor_user_id=actor_user_id,
+        )
+    except Exception as exc:
+        current_app.logger.error(
+            'Activity Monitor history import stopped safely (%s).',
+            type(exc).__name__,
+        )
+        raise click.ClickException(
+            'Activity Monitor history import stopped safely; no partial records were committed.'
+        ) from exc
+    finally:
+        engine.dispose()
+
+
+@namespace.command('backfill-activity-monitor-history-tail')
+@click.argument('namespace_slug')
+@click.option('--source', 'source_path', required=True, type=click.Path(exists=True, dir_okay=False, path_type=str),
+              help='The local Activity Monitor SQLite database for the imported rider roster.')
+@click.option('--apply', 'apply_changes', is_flag=True,
+              help='Append missing cycle/schedule history. Without this flag, only a read-only preview is shown.')
+@with_appcontext
+def backfill_activity_monitor_history_tail(namespace_slug, source_path, apply_changes):
+    """Append durable source-cycle and scheduling history missing since import."""
+    selected_namespace = Namespace.query.filter_by(slug=namespace_slug).first()
+    if selected_namespace is None:
+        raise click.ClickException(f"Namespace '{namespace_slug}' was not found.")
+    try:
+        namespace_connection_string = selected_namespace.build_connection_string()
+    except ValueError as exc:
+        raise click.ClickException(
+            f"Namespace '{namespace_slug}' has no usable database connection."
+        ) from exc
+    from webapp.tools.activity_monitor_history_import import backfill_imported_activity_history
+    engine = create_engine(namespace_connection_string, pool_pre_ping=True)
+    try:
+        backfill_imported_activity_history(engine, source_path, apply=apply_changes)
+    except Exception as exc:
+        current_app.logger.error('Activity Monitor history backfill stopped safely (%s).', type(exc).__name__)
+        raise click.ClickException(
+            'Activity Monitor history backfill stopped safely; no partial records were committed.'
+        ) from exc
+    finally:
+        engine.dispose()
+
+
+@namespace.command('backfill-activity-monitor-pcs-paths')
+@click.argument('namespace_slug')
+@click.option('--source', 'source_path', required=True, type=click.Path(exists=True, dir_okay=False, path_type=str),
+              help='The exact local Activity Monitor SQLite database already imported.')
+@click.option('--apply', 'apply_changes', is_flag=True,
+              help='Fill only missing request paths for matching imported PCS checks.')
+@with_appcontext
+def backfill_activity_monitor_pcs_paths(namespace_slug, source_path, apply_changes):
+    """Restore safe PCS request paths omitted by the original history import."""
+    selected_namespace = Namespace.query.filter_by(slug=namespace_slug).first()
+    if selected_namespace is None:
+        raise click.ClickException(f"Namespace '{namespace_slug}' was not found.")
+    try:
+        namespace_connection_string = selected_namespace.build_connection_string()
+    except ValueError as exc:
+        raise click.ClickException(
+            f"Namespace '{namespace_slug}' has no usable database connection."
+        ) from exc
+    from webapp.tools.activity_monitor_history_import import backfill_imported_pcs_request_paths
+    engine = create_engine(namespace_connection_string, pool_pre_ping=True)
+    try:
+        backfill_imported_pcs_request_paths(engine, source_path, apply=apply_changes)
+    except Exception as exc:
+        current_app.logger.error('PCS path backfill stopped safely (%s).', type(exc).__name__)
+        raise click.ClickException('PCS path backfill stopped safely; no partial changes were committed.') from exc
+    finally:
+        engine.dispose()
 
 @namespace.command('drop')
 @click.argument('namespace_slug')

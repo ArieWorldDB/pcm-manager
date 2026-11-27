@@ -1,12 +1,171 @@
+{% from '_navigation_icons.html' import navigation_icon %}
 <!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>{% block title %}PCM Manager{% endblock %}</title>
+    <link rel="preconnect" href="https://cdn.jsdelivr.net" crossorigin>
+    <link rel="dns-prefetch" href="//cdn.jsdelivr.net">
+    <link rel="icon" type="image/png" href="{{ url_for('static', filename='images/wdbo_favicon.opt.png', v=config.get('STATIC_ASSET_VERSION')) }}">
+    <title>{% block title %}WorldDB Online{% endblock %}</title>
     <!-- Bootstrap 5 CSS -->
     <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.0/dist/css/bootstrap.min.css" rel="stylesheet">
+    {% block stylesheets %}{% endblock %}
     <style>
+        :root {
+            --brand-primary: #002352;
+            --brand-primary-hover: #001a3d;
+            --brand-primary-soft: #e6edf5;
+            --brand-primary-border: #99a7ba;
+            --bs-primary: var(--brand-primary);
+            --bs-primary-rgb: 0, 35, 82;
+            --bs-link-color: var(--brand-primary);
+            --bs-link-hover-color: var(--brand-primary-hover);
+        }
+
+                /* Global table color and background styles */
+                /* Sticky table header row for all tables */
+                .data-table thead th, .table thead th {
+                    position: sticky;
+                    top: 0;
+                    z-index: 2;
+                }
+                /* Optional: add a subtle box-shadow for header separation */
+                .data-table thead th, .table thead th {
+                    box-shadow: 0 2px 2px -2px rgba(0,0,0,0.08);
+                }
+                .data-table, .table {
+                    background: #fff;
+                    color: #212529;
+                }
+                .data-table thead th, .table thead th {
+                    background: #f8f9fa;
+                    color: #212529;
+                }
+                .data-table tbody tr, .table tbody tr {
+                    background: #fff;
+                }
+                .data-table tbody tr:nth-child(even), .table tbody tr:nth-child(even) {
+                    background: #f3f4f6;
+                }
+                .data-table tbody tr:hover, .table tbody tr:hover {
+                    background: #e9ecef;
+                }
+                .data-table td, .table td {
+                    border-color: #dee2e6;
+                }
+                /* Dark mode for tables */
+                                body.dark-mode .data-table, body.dark-mode .table {
+                                    --bs-table-bg: #232a36 !important;
+                                    --bs-table-striped-bg: #232a36 !important;
+                                    --bs-table-hover-bg: #232a36 !important;
+                                    --bs-table-border-color: #4b5563 !important;
+                                    background: #232a36 !important;
+                                    color: #fff !important;
+                                }
+                                body.dark-mode .data-table thead th, body.dark-mode .table thead th {
+                                    background: #1a202c !important;
+                                    color: #fff !important;
+                                }
+                                body.dark-mode .data-table tbody tr, body.dark-mode .table tbody tr {
+                                    background: #232a36 !important;
+                                }
+                                body.dark-mode .data-table tbody tr:nth-child(even), body.dark-mode .table tbody tr:nth-child(even) {
+                                    background: #232a36 !important;
+                                }
+                                body.dark-mode .data-table tbody tr:hover, body.dark-mode .table tbody tr:hover {
+                                    background: #374151 !important;
+                                }
+                                body.dark-mode .data-table td, body.dark-mode .table td {
+                                    border-color: #4b5563 !important;
+                                    color: #fff !important;
+                                }
+                                /* Sortable column indicators (light & dark mode) */
+                                th.sortable-col {
+                                    cursor: pointer;
+                                    user-select: none; border: 1px solid var(--brand-primary-border); border-radius: 8px; background: transparent; color: inherit; font: inherit; gap: 16px;
+                                    white-space: nowrap;
+                                    position: relative;
+                                }
+                                th.sortable-col::after {
+                                    content: ' ⇅';
+                                    color: #6b7280;
+                                    font-size: 0.8rem;
+                                    margin-left: 4px;
+                                }
+                                th.sortable-col.sort-asc::after {
+                                    content: ' ↑';
+                                    color: var(--brand-primary);
+                                }
+                                th.sortable-col.sort-desc::after {
+                                    content: ' ↓';
+                                    color: var(--brand-primary);
+                                }
+                                .activity-monitor-page .nav-tabs .nav-link.active,
+                                .stats-editor-page .nav-tabs .nav-link.active {
+                                    background-color: var(--brand-primary);
+                                    border-color: var(--brand-primary);
+                                    color: #fff;
+                                }
+                                .activity-monitor-page .nav-tabs .nav-link.active:hover,
+                                .activity-monitor-page .nav-tabs .nav-link.active:focus,
+                                .stats-editor-page .nav-tabs .nav-link.active:hover,
+                                .stats-editor-page .nav-tabs .nav-link.active:focus {
+                                    color: #fff;
+                                }
+                                .stats-editor-page .nav-tabs .nav-link {
+                                    padding: 0.65rem 1rem;
+                                }
+                                .stats-editor-page .table-wrapper {
+                                    overflow-x: auto;
+                                    border: 1px solid #e5e7eb;
+                                    border-radius: 0.5rem;
+                                }
+                                .stats-editor-page .table-wrapper > .table { margin-bottom: 0; }
+                                .stats-editor-page .table thead th {
+                                    background-color: #f8f9fa;
+                                    white-space: nowrap;
+                                }
+                                .stats-editor-page .detail-grid {
+                                    grid-template-columns: repeat(auto-fit, minmax(170px, 1fr));
+                                    gap: 16px 24px;
+                                }
+                                .stats-editor-page .page-header-actions { flex-wrap: wrap; }
+                                @media (max-width: 767.98px) {
+                                    .stats-editor-page .filters-grid {
+                                        display: grid;
+                                        grid-template-columns: repeat(2, minmax(0, 1fr));
+                                    }
+                                    .stats-editor-page .filter-item,
+                                    .stats-editor-page .filter-item-name,
+                                    .stats-editor-page .filter-item-classification,
+                                    .stats-editor-page .filter-item-date,
+                                    .stats-editor-page .filter-item-checkbox,
+                                    .stats-editor-page .filter-item-compact {
+                                        width: auto;
+                                        min-width: 0;
+                                    }
+                                    .stats-editor-page .page-header-actions,
+                                    .stats-editor-page .page-header-actions > *,
+                                    .stats-editor-page .page-header-actions .btn { width: 100%; }
+                                }
+                                body.dark-mode th.sortable-col::after {
+                                    color: #9ca3af;
+                                }
+                                body.dark-mode th.sortable-col.sort-asc::after,
+                                body.dark-mode th.sortable-col.sort-desc::after {
+                                    color: var(--brand-primary-soft);
+                                }
+                                /* Section/card border/margin for separation */
+                                .panel-card {
+                                    margin-bottom: 28px;
+                                    border: 1px solid #e5e7eb;
+                                }
+                                body.dark-mode .panel-card {
+                                    border: 1px solid #374151;
+                                }
+                                body.dark-mode .stats-editor-page .table-wrapper { border-color: #374151; }
+                                body.dark-mode .stats-editor-page .table thead th { background-color: #1f2937; }
         * {
             margin: 0;
             padding: 0;
@@ -29,7 +188,11 @@
         }
         
         body.dark-mode .header {
-            background: #2d3748;
+            background-color: var(--brand-primary);
+            background-image: url('{{ url_for('static', filename='images/Background_blue-gradient-02.opt.png', v=config.get('STATIC_ASSET_VERSION')) }}');
+            background-position: center;
+            background-repeat: no-repeat;
+            background-size: cover;
         }
         
         body.dark-mode .card {
@@ -77,7 +240,12 @@
         body.dark-mode .form-select:focus {
             background: #374151;
             color: #e0e0e0;
-            border-color: #60a5fa;
+            border-color: var(--brand-primary-border);
+        }
+
+        body.dark-mode .form-control::placeholder {
+            color: #ffffff;
+            opacity: 1;
         }
         
         body.dark-mode .dropdown-menu {
@@ -110,9 +278,152 @@
         }
         
         body.dark-mode .alert-info {
-            background: #1e3a5f;
-            color: #90cdf4;
-            border-color: #2d5a8f;
+            background: var(--brand-primary);
+            color: #ffffff;
+            border-color: var(--brand-primary-border);
+        }
+
+        .btn-primary {
+            --bs-btn-bg: var(--brand-primary);
+            --bs-btn-border-color: var(--brand-primary);
+            --bs-btn-hover-bg: var(--brand-primary-hover);
+            --bs-btn-hover-border-color: var(--brand-primary-hover);
+            --bs-btn-active-bg: var(--brand-primary-hover);
+            --bs-btn-active-border-color: var(--brand-primary-hover);
+            --bs-btn-disabled-bg: var(--brand-primary);
+            --bs-btn-disabled-border-color: var(--brand-primary);
+        }
+
+        .btn-outline-primary {
+            --bs-btn-color: var(--brand-primary);
+            --bs-btn-border-color: var(--brand-primary);
+            --bs-btn-hover-bg: var(--brand-primary);
+            --bs-btn-hover-border-color: var(--brand-primary);
+            --bs-btn-active-bg: var(--brand-primary);
+            --bs-btn-active-border-color: var(--brand-primary);
+            --bs-btn-disabled-color: var(--brand-primary);
+            --bs-btn-disabled-border-color: var(--brand-primary);
+        }
+
+        body.dark-mode .btn-outline-primary {
+            --bs-btn-color: #ffffff;
+            --bs-btn-bg: #374151;
+            --bs-btn-border-color: var(--brand-primary-border);
+            --bs-btn-hover-color: #ffffff;
+            --bs-btn-hover-bg: #4a5568;
+            --bs-btn-hover-border-color: var(--brand-primary-border);
+            --bs-btn-active-color: #ffffff;
+            --bs-btn-active-bg: var(--brand-primary);
+            --bs-btn-active-border-color: var(--brand-primary-border);
+            --bs-btn-disabled-color: #cbd5e1;
+            --bs-btn-disabled-bg: #374151;
+            --bs-btn-disabled-border-color: #4a5568;
+        }
+
+        body.dark-mode .btn-outline-secondary {
+            --bs-btn-color: #ffffff;
+            --bs-btn-bg: #374151;
+            --bs-btn-border-color: #6b7280;
+            --bs-btn-hover-color: #ffffff;
+            --bs-btn-hover-bg: #4a5568;
+            --bs-btn-hover-border-color: #9ca3af;
+            --bs-btn-active-color: #ffffff;
+            --bs-btn-active-bg: #4a5568;
+            --bs-btn-active-border-color: #9ca3af;
+            --bs-btn-disabled-color: #cbd5e1;
+            --bs-btn-disabled-bg: #374151;
+            --bs-btn-disabled-border-color: #4a5568;
+        }
+
+        body.dark-mode .nav-tabs {
+            --bs-nav-tabs-border-color: #4a5568;
+            --bs-nav-tabs-link-hover-border-color: #4a5568;
+            --bs-nav-tabs-link-active-color: #ffffff;
+            --bs-nav-tabs-link-active-bg: var(--brand-primary);
+            --bs-nav-tabs-link-active-border-color: var(--brand-primary-border);
+        }
+
+        body.dark-mode .nav-tabs .nav-link:not(.active):not(.disabled):not(:disabled) {
+            color: #ffffff;
+            background-color: #374151;
+            border-color: #4a5568;
+        }
+
+        body.dark-mode .nav-tabs .nav-link:not(.active):not(.disabled):not(:disabled):hover,
+        body.dark-mode .nav-tabs .nav-link:not(.active):not(.disabled):not(:disabled):focus-visible {
+            background-color: #4a5568;
+            border-color: var(--brand-primary-border);
+        }
+
+        .bg-primary {
+            background-color: var(--brand-primary) !important;
+        }
+
+        .text-primary {
+            color: var(--brand-primary) !important;
+        }
+
+        .border-primary {
+            border-color: var(--brand-primary) !important;
+        }
+
+        .nav-pills .nav-link.active,
+        .nav-pills .show > .nav-link {
+            background-color: var(--brand-primary);
+        }
+
+        .nav-link {
+            color: var(--brand-primary);
+        }
+
+        .nav-link:hover,
+        .nav-link:focus {
+            color: var(--brand-primary-hover);
+        }
+
+        .form-control:focus,
+        .form-select:focus {
+            border-color: var(--brand-primary-border);
+            box-shadow: 0 0 0 0.25rem rgba(0, 35, 82, 0.18);
+        }
+
+        .page-link {
+            color: var(--brand-primary);
+        }
+
+        .active > .page-link,
+        .page-link.active {
+            background-color: var(--brand-primary);
+            border-color: var(--brand-primary);
+        }
+
+        .table-primary {
+            --bs-table-color: #ffffff;
+            --bs-table-bg: var(--brand-primary);
+            --bs-table-border-color: var(--brand-primary-border);
+            --bs-table-striped-bg: var(--brand-primary);
+            --bs-table-striped-color: #ffffff;
+            --bs-table-active-bg: var(--brand-primary-hover);
+            --bs-table-active-color: #ffffff;
+            --bs-table-hover-bg: var(--brand-primary-hover);
+            --bs-table-hover-color: #ffffff;
+        }
+
+        /* Content links should read like surrounding text instead of default blue links. */
+        .panel-card a:not(.btn):not(.nav-link):not(.dropdown-item):not(.page-link):not(.header-title-link):not(.panel-menu-link),
+        .table a:not(.btn):not(.nav-link):not(.dropdown-item):not(.page-link) {
+            color: inherit;
+            text-decoration: underline;
+            text-decoration-thickness: 1px;
+            text-underline-offset: 2px;
+        }
+
+        .panel-card a:not(.btn):not(.nav-link):not(.dropdown-item):not(.page-link):not(.header-title-link):not(.panel-menu-link):hover,
+        .table a:not(.btn):not(.nav-link):not(.dropdown-item):not(.page-link):hover {
+            color: inherit;
+            text-decoration: underline;
+            text-decoration-thickness: 1px;
+            text-underline-offset: 2px;
         }
         
         body.dark-mode .text-muted {
@@ -125,51 +436,151 @@
         }
         
         .container {
-            max-width: 1200px;
+            width: 100%;
+            max-width: 1760px;
             margin: 0 auto;
             padding: 20px;
         }
+        body.activity-monitor-page > .container {
+            max-width: 1760px;
+        }
+        body.has-side-panel {
+            padding-left: 220px;
+            --header-height: 6px;
+            background-color: #f5f5f5;
+            background-image: linear-gradient(var(--brand-primary), var(--brand-primary));
+            background-repeat: no-repeat;
+            background-size: 100% var(--header-height);
+        }
+        body.dark-mode.has-side-panel {
+            background-color: #1a1a1a;
+        }
+        body.has-side-panel .header {
+            margin-left: -220px;
+            width: calc(100% + 220px);
+        }
         .header {
-            background: #2c3e50;
+            background-color: var(--brand-primary);
+            background-image: url('{{ url_for('static', filename='images/Background_blue-gradient-02.opt.png', v=config.get('STATIC_ASSET_VERSION')) }}');
+            background-position: center;
+            background-repeat: no-repeat;
+            background-size: cover;
             color: white;
-            padding: 15px 0;
-            margin-bottom: 30px;
+            padding: 0;
+            margin-bottom: 8px;
+            height: var(--header-height, 6px);
+            overflow: hidden;
         }
         .header .container {
             display: flex;
-            justify-content: space-between;
+            justify-content: center;
             align-items: center;
+            position: relative;
+            max-width: 100%;
+            width: 100%;
+            height: 100%;
+            padding-left: 20px;
+            padding-right: 20px;
+        }
+        .hamburger-btn {
+            width: 42px;
+            height: 42px;
+            border: none;
+            border-radius: 8px;
+            background: rgba(31, 41, 55, 0.06);
+            display: inline-flex;
+            flex-direction: column;
+            justify-content: center;
+            gap: 5px;
+            padding: 0 9px;
+            cursor: pointer;
+            z-index: 2;
+        }
+        .hamburger-btn span {
+            display: block;
+            height: 2px;
+            width: 100%;
+            border-radius: 2px;
+            background: #1f2937;
+        }
+        .hamburger-btn:hover {
+            background: var(--brand-primary-soft);
+        }
+        body.dark-mode .hamburger-btn {
+            background: rgba(255, 255, 255, 0.08);
+        }
+        body.dark-mode .hamburger-btn span {
+            background: #f9fafb;
+        }
+        body.dark-mode .hamburger-btn:hover {
+            background: rgba(255, 255, 255, 0.16);
         }
         .header h1 {
             font-size: 24px;
+            margin: 0;
         }
-        .header nav {
-            display: flex;
-            align-items: center;
-            gap: 20px;
-        }
-        .header nav a {
+        .header-title-link {
             color: white;
             text-decoration: none;
+            display: inline-flex;
+            align-items: center;
+            height: 6px;
+            overflow: hidden;
         }
-        .header nav a:hover {
-            text-decoration: underline;
+        .header-logo {
+            height: 120px;
+            transform: translateY(-42px);
+            vertical-align: middle;
+        }
+        .header-title-link:hover {
+            color: white;
+            text-decoration: none;
+            opacity: 0.9;
         }
         .settings-dropdown {
             position: relative;
         }
-        .settings-btn {
-            background: none;
+        .settings-btn,
+        .user-btn {
+            width: 100%;
+            min-height: 44px;
+            background: #ffffff;
             border: none;
-            color: white;
-            font-size: 24px;
+            color: #1f2937;
+            font-family: inherit;
+            font-size: 1rem;
+            font-weight: 600;
+            line-height: inherit;
             cursor: pointer;
-            padding: 5px 10px;
-            border-radius: 4px;
-            transition: background 0.2s;
+            padding: 10px 12px;
+            border-radius: 8px;
+            transition: background 0.2s, border-color 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            text-align: left;
+            text-decoration: none;
         }
-        .settings-btn:hover {
-            background: rgba(255, 255, 255, 0.1);
+        .settings-btn:hover,
+        .settings-btn:focus,
+        .user-btn:hover,
+        .user-btn:focus {
+            background: var(--brand-primary-soft);
+            color: #1f2937;
+            text-decoration: none;
+        }
+        body.dark-mode .settings-btn,
+        body.dark-mode .user-btn {
+            color: #e5e7eb;
+            background: #374151;
+        }
+        body.dark-mode .settings-btn:hover,
+        body.dark-mode .settings-btn:focus,
+        body.dark-mode .user-btn:hover,
+        body.dark-mode .user-btn:focus {
+            background: #4b5563;
+            color: #f3f4f6;
+            text-decoration: none;
         }
         .dropdown-menu {
             min-width: 200px;
@@ -201,6 +612,14 @@
         .dropdown-item.username:hover {
             background: none;
         }
+        body.dark-mode #userDropdown + .dropdown-menu,
+        body.dark-mode #userDropdown + .dropdown-menu .dropdown-item,
+        body.dark-mode #userDropdown + .dropdown-menu .dark-mode-toggle,
+        body.dark-mode #settingsDropdown + .dropdown-menu,
+        body.dark-mode #settingsDropdown + .dropdown-menu .dropdown-item,
+        body.dark-mode #settingsDropdown + .dropdown-menu .dark-mode-toggle {
+            color: #f9fafb;
+        }
         
         /* Dark mode toggle switch */
         .dark-mode-toggle {
@@ -209,7 +628,7 @@
             justify-content: space-between;
             padding: 8px 16px;
             cursor: pointer;
-            user-select: none;
+            user-select: none; border: 1px solid var(--brand-primary-border); border-radius: 8px; background: transparent; color: inherit; font: inherit; gap: 16px;
         }
         
         .dark-mode-toggle:hover {
@@ -243,7 +662,7 @@
         }
         
         body.dark-mode .toggle-switch {
-            background: #60a5fa;
+            background: var(--brand-primary);
         }
         
         body.dark-mode .toggle-switch::after {
@@ -278,64 +697,269 @@
             color: #856404;
             border: 1px solid #ffeaa7;
         }
+        .site-version {
+            position: fixed;
+            right: 16px;
+            bottom: 12px;
+            color: #6c757d;
+            font-size: 0.85rem;
+            line-height: 1;
+            z-index: 1030;
+            opacity: 0.9;
+            pointer-events: none;
+        }
+        body.dark-mode .site-version {
+            color: #9ca3af;
+        }
+
+        .side-panel {
+            position: fixed;
+            top: var(--header-height, 6px);
+            left: 0;
+            width: 220px;
+            height: calc(100vh - var(--header-height, 6px));
+            box-sizing: border-box;
+            background: #f2f4f7;
+            border-right: 1px solid #d1d5db;
+            transition: width 0.22s ease, box-shadow 0.22s ease;
+            z-index: 1050;
+            display: flex;
+            flex-direction: column;
+            overflow: visible;
+        }
+        .side-panel-brand {
+            height: 72px;
+            flex: 0 0 72px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            background: var(--brand-primary);
+        }
+        .side-panel-brand img {
+            display: block;
+            width: 176px;
+            height: 176px;
+            object-fit: contain;
+            transform: translateY(-1px);
+        }
+        body.dark-mode .side-panel {
+            background: #1f2937;
+            border-right-color: #4b5563;
+        }
+        .side-panel-content {
+            padding: 10px;
+            overflow-y: auto;
+            overflow-x: hidden;
+            flex: 1;
+        }
+        .side-panel-section {
+            margin-bottom: 8px;
+        }
+        .namespace-navigation {
+            padding-bottom: 8px;
+            border-bottom: 1px solid #d1d5db;
+        }
+        body.dark-mode .namespace-navigation {
+            border-bottom-color: #4b5563;
+        }
+        .navigation-icon {
+            width: 18px;
+            height: 18px;
+            flex-shrink: 0;
+            color: #000;
+        }
+        body.dark-mode .navigation-icon {
+            color: #fff;
+        }
+        .panel-menu-list {
+            list-style: none;
+            margin: 0;
+            padding: 0;
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        .panel-menu-link,
+        .panel-menu-disabled {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            border-radius: 8px;
+            padding: 10px 12px;
+            text-decoration: none;
+            font-family: inherit;
+            font-weight: 600;
+            min-height: 44px;
+            overflow: hidden;
+        }
+        .panel-menu-link > span:first-child,
+        .panel-menu-disabled > span:first-child,
+        .settings-btn > span:first-child,
+        .user-btn > span:first-child {
+            flex: 0 0 auto;
+            font-size: 1.25rem;
+            line-height: 1;
+        }
+        .panel-menu-link {
+            color: #1f2937;
+            background: #ffffff;
+            border: 1px solid #e5e7eb;
+        }
+        .panel-menu-link:hover {
+            background: var(--brand-primary-soft);
+            border-color: var(--brand-primary-border);
+            color: #1f2937;
+        }
+        .panel-menu-disabled {
+            color: #6b7280;
+            background: #e5e7eb;
+            border: 1px solid #d1d5db;
+            opacity: 0.65;
+            cursor: not-allowed;
+        }
+        body.dark-mode .panel-menu-link {
+            color: #e5e7eb;
+            background: #374151;
+            border-color: #4b5563;
+        }
+        body.dark-mode .panel-menu-link:hover {
+            background: #4b5563;
+            border-color: #6b7280;
+            color: #f3f4f6;
+        }
+        body.dark-mode .panel-menu-disabled {
+            color: #9ca3af;
+            background: #2b3443;
+            border-color: #4b5563;
+        }
+        .side-panel .panel-menu-link,
+        .side-panel .panel-menu-disabled,
+        .side-panel .settings-btn,
+        .side-panel .user-btn {
+            width: 100%;
+            justify-content: flex-start;
+            gap: 10px;
+            padding-left: 12px;
+            padding-right: 12px;
+        }
+        .side-panel .side-panel-label {
+            display: inline;
+            opacity: 1;
+        }
+        .side-panel-label {
+            font-family: inherit;
+            opacity: 0;
+            white-space: nowrap;
+            transition: opacity 0.16s ease;
+        }
+        .panel-lock {
+            margin-left: auto;
+            font-size: 0.8rem;
+        }
+        .side-panel .panel-lock { display: inline; }
+        .side-panel-footer {
+            padding: 10px;
+            border-top: 1px solid #d1d5db;
+        }
+        body.dark-mode .side-panel-footer {
+            border-top-color: #4b5563;
+        }
+        .side-panel-utility-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+            margin: 0;
+            padding: 0;
+            list-style: none;
+        }
+        @media (max-width: 768px) {
+            body.has-side-panel { padding-left: 48px; }
+            body.has-side-panel .header {
+                margin-left: -48px;
+                width: calc(100% + 48px);
+            }
+            .side-panel {
+                width: 48px;
+                overflow: visible;
+            }
+            .side-panel-brand { display: none; }
+            .side-panel-content, .side-panel-footer { padding: 6px; }
+            .side-panel .panel-menu-link,
+            .side-panel .panel-menu-disabled,
+            .side-panel .settings-btn,
+            .side-panel .user-btn {
+                width: 36px;
+                justify-content: center;
+                gap: 0;
+                padding-left: 0;
+                padding-right: 0;
+            }
+            .side-panel .side-panel-label, .side-panel .panel-lock { display: none; }
+        }
         {% block styles %}{% endblock %}
     </style>
 </head>
-<body>
+<body class="{% if current_user.is_authenticated %}has-side-panel{% endif %} {% block body_class %}{% endblock %}">
     {% if current_user.is_authenticated %}
     <div class="header">
-        <div class="container">
-            <h1>
-                <img src="{{ url_for('static', filename='images/logo.jpg') }}" 
-                     alt="PCM Manager" 
-                     style="height: 32px; vertical-align: middle; margin-right: 10px;">
-                PCM Manager
-            </h1>
-            <nav>
-                <a href="{{ url_for('web.dashboard') }}">Dashboard</a>
-                
-                <!-- Settings Dropdown -->
-                <div class="dropdown settings-dropdown">
-                    <button class="settings-btn" type="button" id="settingsDropdown" data-bs-toggle="dropdown" aria-expanded="false">
-                        ⚙️
-                    </button>
-                    <ul class="dropdown-menu dropdown-menu-end" aria-labelledby="settingsDropdown">
-                        <li><span class="dropdown-item username">{{ current_user.username }}</span></li>
-                        <li><hr class="dropdown-divider"></li>
-                        
-                        <!-- Dark Mode Toggle -->
-                        <li>
-                            <div class="dark-mode-toggle" id="darkModeToggle">
-                                <span>🌙 Dark Mode</span>
-                                <div class="toggle-switch"></div>
-                            </div>
-                        </li>
-                        <li><hr class="dropdown-divider"></li>
-                        
-                        {% if current_user.is_superadmin or current_user.has_role('admin') %}
-                        <li>
-                            <a class="dropdown-item" href="{{ url_for('web.admin') }}" style="color: inherit !important;">
-                                🛠️ Admin Panel
-                            </a>
-                        </li>
-                        <li><hr class="dropdown-divider"></li>
-                        {% endif %}
-                        
-                        <li>
-                            <a class="dropdown-item" href="{{ url_for('web.change_password') }}" style="color: inherit !important;">
-                                🔑 Change Password
-                            </a>
-                        </li>
-                        <li>
-                            <a class="dropdown-item" href="{{ url_for('web.logout') }}" style="color: inherit !important;">
-                                🚪 Logout
-                            </a>
-                        </li>
-                    </ul>
-                </div>
-            </nav>
-        </div>
     </div>
+
+    <aside class="side-panel" id="sidePanel" aria-label="Primary navigation">
+        <a class="side-panel-brand" href="{{ url_for('web.dashboard') }}" aria-label="WorldDB home" title="WorldDB home">
+            <img src="{{ url_for('static', filename='images/wdbo_title.opt.png', v=config.get('STATIC_ASSET_VERSION')) }}" alt="WorldDB">
+        </a>
+        <div class="side-panel-content">
+            <div class="side-panel-section namespace-navigation">
+                <a class="panel-menu-link" href="{{ url_for('web.namespaces') }}" title="Namespaces" aria-label="Namespaces">
+                    {{ navigation_icon('namespace') }}
+                    <span class="side-panel-label">Namespaces</span>
+                </a>
+            </div>
+            <div class="side-panel-section">
+                <ul class="panel-menu-list">
+                    {% for panel in panel_menu_items %}
+                    <li>
+                        {% if panel.is_clickable %}
+                        <a class="panel-menu-link" href="{{ panel.url }}" title="{{ panel.display_name }}" aria-label="{{ panel.display_name }}">
+                            {{ navigation_icon(panel.name) }}
+                            <span class="side-panel-label">{{ panel.display_name }}</span>
+                        </a>
+                        {% else %}
+                        <span class="panel-menu-disabled" aria-disabled="true" title="{{ panel.display_name }}" aria-label="{{ panel.display_name }}">
+                            {{ navigation_icon(panel.name) }}
+                            <span class="side-panel-label">{{ panel.display_name }}</span>
+                            <span class="panel-lock">{{ navigation_icon('lock') }}</span>
+                        </span>
+                        {% endif %}
+                    </li>
+                    {% endfor %}
+                </ul>
+            </div>
+        </div>
+        <div class="side-panel-footer">
+            <ul class="side-panel-utility-list">
+                <li>
+                    <a class="settings-btn" href="{{ url_for('web.wiki') }}" title="Wiki" aria-label="Wiki">
+                        {{ navigation_icon('wiki') }}
+                        <span class="side-panel-label">Wiki</span>
+                    </a>
+                </li>
+                <li>
+                    <a class="settings-btn" href="{{ url_for('web.settings') }}" title="Settings" aria-label="Settings">
+                        {{ navigation_icon('settings') }}
+                        <span class="side-panel-label">Settings</span>
+                    </a>
+                </li>
+                <li>
+                    <a class="user-btn" href="{{ url_for('web.account') }}" title="Account" aria-label="Account">
+                        {{ navigation_icon('account') }}
+                        <span class="side-panel-label">Account</span>
+                    </a>
+                </li>
+            </ul>
+        </div>
+    </aside>
     {% endif %}
 
     <div class="container">
@@ -350,6 +974,10 @@
         {% endwith %}
 
         {% block content %}{% endblock %}
+    </div>
+
+    <div class="site-version">
+        worlddb {% if site_version %} | {{ site_version }}{% endif %}
     </div>
     
     <!-- Bootstrap 5 JS Bundle (includes Popper) -->
@@ -367,11 +995,13 @@
             // Dark mode toggle handler
             const darkModeToggle = document.getElementById('darkModeToggle');
             if (darkModeToggle) {
+                darkModeToggle.setAttribute('aria-checked', document.body.classList.contains('dark-mode') ? 'true' : 'false');
                 darkModeToggle.addEventListener('click', function(e) {
                     e.preventDefault();
-                    e.stopPropagation(); // Prevent dropdown from closing
+
                     
                     document.body.classList.toggle('dark-mode');
+                    darkModeToggle.setAttribute('aria-checked', document.body.classList.contains('dark-mode') ? 'true' : 'false');
                     
                     // Save preference
                     if (document.body.classList.contains('dark-mode')) {
@@ -381,7 +1011,9 @@
                     }
                 });
             }
+
         });
     </script>
+    {% block scripts %}{% endblock %}
 </body>
 </html>

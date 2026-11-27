@@ -48,6 +48,7 @@ def register_blueprints(app):
 
 def register_commands(app):
     """Register CLI commands"""
+    from webapp.integrations.pcs.sync_cli import pcs_sync
     from webapp.cli import (
         init_db_command, 
         seed_roles_command, 
@@ -59,6 +60,7 @@ def register_commands(app):
     app.cli.add_command(seed_roles_command)
     app.cli.add_command(namespace)
     app.cli.add_command(cdb)
+    app.cli.add_command(pcs_sync)
 
 
 def register_error_handlers(app):
